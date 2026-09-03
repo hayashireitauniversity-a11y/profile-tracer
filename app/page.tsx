@@ -8,9 +8,11 @@ import {
   RotateCcw,
   Trash2,
   SwitchCamera,
+  Share2,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+
 import {
   CameraCanvas,
   type CameraCanvasHandle,
@@ -40,7 +42,12 @@ type Pair = {
   b: Point | null
 }
 
-const steps: Step[] = ['AXIS', 'SCALE', 'PROFILE', 'RESULT']
+const steps: Step[] = [
+  'AXIS',
+  'SCALE',
+  'PROFILE',
+  'RESULT',
+]
 
 /**
  * Drawing overlay
@@ -126,7 +133,9 @@ function Overlay({
 
         {trace.length > 1 && (
           <polyline
-            points={trace.map((p) => `${p.x},${p.y}`).join(' ')}
+            points={trace
+              .map((p) => `${p.x},${p.y}`)
+              .join(' ')}
             fill="none"
             stroke="var(--accent-foreground)"
             strokeWidth="4"
@@ -139,6 +148,38 @@ function Overlay({
   )
 }
 
+/**
+ * Generate FreeFEM coordinate variables.
+ *
+ * Example:
+ *
+ * dx1=0.000000;
+ * dy1=12.345678;
+ * dx2=4.123456;
+ * dy2=13.456789;
+ * dx3=8.246912;
+ * dy3=14.567890;
+ *
+ * x = profile.x
+ * r = profile.r
+ *
+ * No additional coordinate transformation is applied here.
+ */
+function generateFreeFEMVariables(
+  points: Array<{
+    x: number
+    r: number
+  }>,
+) {
+  return points
+    .map(
+      (point, index) =>
+        `dx${index + 1}=${point.x.toFixed(6)};\n` +
+        `dy${index + 1}=${point.r.toFixed(6)};`,
+    )
+    .join('\n')
+}
+
 export default function Page() {
   const [stepIndex, setStepIndex] = useState(0)
 
@@ -147,121 +188,164 @@ export default function Page() {
     b: null,
   })
 
-  const [scalePoints, setScalePoints] = useState<Pair>({
-    a: null,
-    b: null,
-  })
+  const [scalePoints, setScalePoints] =
+    useState<Pair>({
+      a: null,
+      b: null,
+    })
 
-  const [trace, setTrace] = useState<Point[]>([])
+  const [trace, setTrace] =
+    useState<Point[]>([])
 
   /**
    * Known physical length of the cylinder generatrix.
    *
    * This is NOT the diameter.
    */
-  const [realLength, setRealLength] = useState('100')
+  const [realLength, setRealLength] =
+    useState('100')
 
-  const [count, setCount] = useState('24')
+  const [count, setCount] =
+    useState('24')
 
   /**
    * TOP / BOTTOM is descriptive only.
    * It does not change the sign of radius.
    */
-  const [side, setSide] = useState<'TOP' | 'BOTTOM'>('TOP')
+  const [side, setSide] =
+    useState<'TOP' | 'BOTTOM'>('TOP')
 
-  const [error, setError] = useState('')
+  const [error, setError] =
+    useState('')
 
-  const [stream, setStream] = useState<MediaStream | null>(null)
+  const [stream, setStream] =
+    useState<MediaStream | null>(null)
 
   const [fixedFrame, setFixedFrame] =
     useState<HTMLCanvasElement | null>(null)
 
-  const [captured, setCaptured] = useState(false)
+  const [captured, setCaptured] =
+    useState(false)
 
   /**
    * environment = rear camera
    * user        = front camera
    */
   const [cameraFacing, setCameraFacing] =
-    useState<'environment' | 'user'>('environment')
+    useState<
+      'environment' | 'user'
+    >('environment')
 
-  const canvasRef = useRef<CameraCanvasHandle>(null)
+  const canvasRef =
+    useRef<CameraCanvasHandle>(null)
 
   const step = steps[stepIndex]
 
   /**
    * Start camera.
    *
-   * We first try exact facingMode,
-   * then ideal facingMode,
-   * then a generic camera.
+   * Use ideal facingMode first because some
+   * iPad/Safari combinations reject exact
+   * facingMode constraints.
    */
   const startCamera = async (
-    facing: 'environment' | 'user' = cameraFacing,
+    facing:
+      | 'environment'
+      | 'user' = cameraFacing,
   ) => {
     if (
       typeof navigator === 'undefined' ||
       !navigator.mediaDevices?.getUserMedia
     ) {
-      setError('このブラウザではカメラを利用できません。')
+      setError(
+        'このブラウザではカメラを利用できません。',
+      )
       return
     }
 
     try {
-      let nextStream: MediaStream | null = null
+      /**
+       * Stop the previous stream before
+       * requesting another camera.
+       */
+      stream?.getTracks().forEach(
+        (track) => {
+          track.stop()
+        },
+      )
+
+      let nextStream: MediaStream
 
       try {
+        /**
+         * Preferred camera.
+         */
         nextStream =
-          await navigator.mediaDevices.getUserMedia({
-            video: {
-              facingMode: {
-                exact: facing,
-              },
-            },
-            audio: false,
-          })
-      } catch {
-        try {
-          nextStream =
-            await navigator.mediaDevices.getUserMedia({
+          await navigator.mediaDevices.getUserMedia(
+            {
               video: {
                 facingMode: {
                   ideal: facing,
                 },
               },
               audio: false,
-            })
-        } catch {
-          nextStream =
-            await navigator.mediaDevices.getUserMedia({
+            },
+          )
+      } catch (firstError) {
+        console.warn(
+          'Preferred camera request failed:',
+          firstError,
+        )
+
+        /**
+         * Fallback:
+         * let the browser choose an available camera.
+         */
+        nextStream =
+          await navigator.mediaDevices.getUserMedia(
+            {
               video: true,
               audio: false,
-            })
-        }
+            },
+          )
       }
-
-      stream?.getTracks().forEach((track) => track.stop())
 
       setStream(nextStream)
       setCameraFacing(facing)
       setError('')
     } catch (cameraError) {
-      console.error(cameraError)
-
-      setError(
-        'カメラを開始できません。HTTPSまたはlocalhostで、カメラの使用許可を確認してください。',
+      console.error(
+        'Camera error:',
+        cameraError,
       )
+
+      if (
+        cameraError instanceof DOMException
+      ) {
+        setError(
+          `カメラを開始できません。${cameraError.name}: ${cameraError.message}`,
+        )
+      } else {
+        setError(
+          'カメラを開始できません。HTTPSまたはカメラの使用許可を確認してください。',
+        )
+      }
     }
   }
 
   /**
    * Switch between front and rear cameras.
    *
-   * Camera switching is intentionally disabled after capture.
-   * The fixed frame must remain the measurement basis.
+   * Camera switching is intentionally disabled
+   * after capture.
+   *
+   * The fixed frame must remain the
+   * measurement basis.
    */
   const switchCamera = async () => {
-    if (captured) return
+    if (captured) {
+      return
+    }
 
     const nextFacing =
       cameraFacing === 'environment'
@@ -271,8 +355,15 @@ export default function Page() {
     await startCamera(nextFacing)
   }
 
+  /**
+   * Stop camera.
+   */
   const stopCamera = () => {
-    stream?.getTracks().forEach((track) => track.stop())
+    stream?.getTracks().forEach(
+      (track) => {
+        track.stop()
+      },
+    )
 
     setStream(null)
   }
@@ -281,7 +372,8 @@ export default function Page() {
    * Capture the native video frame.
    */
   const capture = async () => {
-    const result = await canvasRef.current?.capture()
+    const result =
+      await canvasRef.current?.capture()
 
     if (result) {
       setCaptured(true)
@@ -292,7 +384,8 @@ export default function Page() {
   /**
    * Retake replaces the measurement frame.
    *
-   * All geometry based on the old frame is cleared.
+   * All geometry based on the old frame
+   * is cleared.
    */
   const retake = () => {
     setFixedFrame(null)
@@ -320,7 +413,10 @@ export default function Page() {
    */
   const axisMath =
     axis.a && axis.b
-      ? normalizeAxis(axis.a, axis.b)
+      ? normalizeAxis(
+          axis.a,
+          axis.b,
+        )
       : null
 
   /**
@@ -328,11 +424,13 @@ export default function Page() {
    *
    * The SCALE line itself may be diagonal.
    *
-   * Only the component parallel to the rotation axis
-   * is used for scaling.
+   * Only the component parallel to the
+   * rotation axis is used for scaling.
    */
   const axisPixel =
-    axisMath && scalePoints.a && scalePoints.b
+    axisMath &&
+    scalePoints.a &&
+    scalePoints.b
       ? projectScaleToAxisDirection(
           scalePoints.a,
           scalePoints.b,
@@ -348,7 +446,8 @@ export default function Page() {
    * projected SCALE length in pixels
    */
   const scaleMmPerPx =
-    axisPixel > 0 && Number(realLength) > 0
+    axisPixel > 0 &&
+    Number(realLength) > 0
       ? calculateScale(
           Number(realLength),
           axisPixel,
@@ -378,19 +477,21 @@ export default function Page() {
       return []
     }
 
-    const sampled = resampleByArcLength(
-      trace,
-      targetCount,
-    )
+    const sampled =
+      resampleByArcLength(
+        trace,
+        targetCount,
+      )
 
-    return sampled.map((point) =>
-      pointToProfilePoint(
-        point,
-        axis.a!,
-        axisMath.direction,
-        axisMath.radialDirection,
-        scaleMmPerPx,
-      ),
+    return sampled.map(
+      (point) =>
+        pointToProfilePoint(
+          point,
+          axis.a!,
+          axisMath.direction,
+          axisMath.radialDirection,
+          scaleMmPerPx,
+        ),
     )
   }, [
     axis,
@@ -421,16 +522,17 @@ export default function Page() {
     }
 
     if (step === 'SCALE') {
-      setScalePoints((current) =>
-        current.a
-          ? {
-              a: current.a,
-              b: p,
-            }
-          : {
-              a: p,
-              b: null,
-            },
+      setScalePoints(
+        (current) =>
+          current.a
+            ? {
+                a: current.a,
+                b: p,
+              }
+            : {
+                a: p,
+                b: null,
+              },
       )
     }
   }
@@ -484,7 +586,9 @@ export default function Page() {
 
     if (
       step === 'AXIS' &&
-      (!axisMath || !axis.a || !axis.b)
+      (!axisMath ||
+        !axis.a ||
+        !axis.b)
     ) {
       setError(
         'AXISの2点を指定してください。',
@@ -521,8 +625,9 @@ export default function Page() {
       return
     }
 
-    setStepIndex((current) =>
-      Math.min(3, current + 1),
+    setStepIndex(
+      (current) =>
+        Math.min(3, current + 1),
     )
   }
 
@@ -530,8 +635,10 @@ export default function Page() {
    * Full application reset.
    */
   const reset = () => {
-    stream?.getTracks().forEach((track) =>
-      track.stop(),
+    stream?.getTracks().forEach(
+      (track) => {
+        track.stop()
+      },
     )
 
     setStream(null)
@@ -555,17 +662,56 @@ export default function Page() {
     setError('')
   }
 
+  /**
+   * Grasshopper point list.
+   */
   const output =
-    generateGrasshopperPointList(profile)
+    generateGrasshopperPointList(
+      profile,
+    )
 
-  const json = generateJSON(profile)
+  /**
+   * JSON.
+   */
+  const json =
+    generateJSON(profile)
 
-  const csv = generateCSV(profile)
+  /**
+   * CSV.
+   */
+  const csv =
+    generateCSV(profile)
 
-  const copy = async (value: string) => {
+  /**
+   * FreeFEM variables.
+   *
+   * These are generated from the same
+   * final profile coordinates.
+   *
+   * Example:
+   *
+   * dx1=0.000000;
+   * dy1=12.345678;
+   * dx2=4.123456;
+   * dy2=13.456789;
+   */
+  const freeFEM =
+    generateFreeFEMVariables(
+      profile,
+    )
+
+  /**
+   * Copy text.
+   */
+  const copy = async (
+    value: string,
+  ) => {
     try {
       await copyText(value)
-      setError('コピーしました。')
+
+      setError(
+        'コピーしました。',
+      )
     } catch {
       setError(
         'コピーに失敗しました。',
@@ -574,9 +720,113 @@ export default function Page() {
   }
 
   /**
-   * The drawing surface is always the main visual area.
+   * Share coordinates.
    *
-   * The control panel is BELOW it, never over it.
+   * On iPad/iPhone this opens the native
+   * share sheet.
+   *
+   * The shared file is a plain-text file
+   * specifically formatted for FreeFEM.
+   */
+  const shareCoordinates =
+    async () => {
+      if (!freeFEM) {
+        setError(
+          '共有する座標データがありません。',
+        )
+        return
+      }
+
+      if (!navigator.share) {
+        setError(
+          'このブラウザでは共有機能を利用できません。COPY CSVを使用してください。',
+        )
+        return
+      }
+
+      try {
+        const blob =
+          new Blob(
+            [freeFEM],
+            {
+              type:
+                'text/plain;charset=utf-8',
+            },
+          )
+
+        const file =
+          new File(
+            [blob],
+            'profile-coordinates.txt',
+            {
+              type: 'text/plain',
+            },
+          )
+
+        /**
+         * Preferred:
+         * share the actual text file.
+         */
+        if (
+          navigator.canShare &&
+          navigator.canShare({
+            files: [file],
+          })
+        ) {
+          await navigator.share({
+            title:
+              'Profile Coordinates',
+            text:
+              'PROFILE TRACER / FreeFEM coordinates',
+            files: [file],
+          })
+
+          setError('')
+          return
+        }
+
+        /**
+         * Fallback:
+         * share the FreeFEM variables
+         * directly as text.
+         */
+        await navigator.share({
+          title:
+            'Profile Coordinates',
+          text: freeFEM,
+        })
+
+        setError('')
+      } catch (shareError) {
+        /**
+         * Closing the native share sheet
+         * is not an actual error.
+         */
+        if (
+          shareError instanceof DOMException &&
+          shareError.name ===
+            'AbortError'
+        ) {
+          return
+        }
+
+        console.error(
+          'Share error:',
+          shareError,
+        )
+
+        setError(
+          '共有できませんでした。COPY CSVを使用してください。',
+        )
+      }
+    }
+
+  /**
+   * The drawing surface is always the
+   * main visual area.
+   *
+   * The control panel is BELOW it,
+   * never over it.
    */
   return (
     <main className="min-h-screen bg-background">
@@ -609,28 +859,31 @@ export default function Page() {
         className="mx-auto flex max-w-[1400px] gap-3 overflow-x-auto px-6 py-5"
         aria-label="Workflow steps"
       >
-        {steps.map((item, index) => (
-          <div
-            key={item}
-            className={`flex min-w-[150px] flex-1 items-center gap-3 rounded-lg border px-4 py-3 ${
-              index === stepIndex
-                ? 'border-primary bg-primary text-primary-foreground'
-                : 'border-border bg-card'
-            }`}
-          >
-            <span className="font-mono text-xs font-bold">
-              0{index + 1}
-            </span>
+        {steps.map(
+          (item, index) => (
+            <div
+              key={item}
+              className={`flex min-w-[150px] flex-1 items-center gap-3 rounded-lg border px-4 py-3 ${
+                index === stepIndex
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : 'border-border bg-card'
+              }`}
+            >
+              <span className="font-mono text-xs font-bold">
+                0{index + 1}
+              </span>
 
-            <span className="font-semibold">
-              {index < stepIndex && (
-                <Check className="mr-1 inline size-4" />
-              )}
+              <span className="font-semibold">
+                {index <
+                  stepIndex && (
+                  <Check className="mr-1 inline size-4" />
+                )}
 
-              {item}
-            </span>
-          </div>
-        ))}
+                {item}
+              </span>
+            </div>
+          ),
+        )}
       </nav>
 
       {/* MAIN */}
@@ -641,25 +894,35 @@ export default function Page() {
             ref={canvasRef}
             stream={stream}
             fixedFrame={fixedFrame}
-            onFixedFrame={setFixedFrame}
+            onFixedFrame={
+              setFixedFrame
+            }
             onPoint={point}
-            tracing={step === 'PROFILE'}
+            tracing={
+              step === 'PROFILE'
+            }
             onTrace={(p) =>
-              setTrace((current) => [
-                ...current,
-                p,
-              ])
+              setTrace(
+                (current) => [
+                  ...current,
+                  p,
+                ],
+              )
             }
             overlays={
               <Overlay
                 axis={axis}
-                scale={scalePoints}
+                scale={
+                  scalePoints
+                }
                 trace={trace}
                 width={
-                  fixedFrame?.width ?? 16
+                  fixedFrame?.width ??
+                  16
                 }
                 height={
-                  fixedFrame?.height ?? 9
+                  fixedFrame?.height ??
+                  9
                 }
               />
             }
@@ -678,55 +941,73 @@ export default function Page() {
             </h2>
 
             <p className="mt-3 leading-6 text-muted-foreground">
-              {step === 'AXIS' &&
+              {step ===
+                'AXIS' &&
                 '回転軸の両端を2点タップしてください'}
 
-              {step === 'SCALE' &&
+              {step ===
+                'SCALE' &&
                 '円柱の母線方向に対応する線分を2点タップしてください'}
 
-              {step === 'PROFILE' &&
+              {step ===
+                'PROFILE' &&
                 'TOPまたはBOTTOMを選択し、輪郭を指でなぞってください'}
 
-              {step === 'RESULT' &&
+              {step ===
+                'RESULT' &&
                 '取得した断面座標を確認・出力できます'}
             </p>
           </div>
 
           {/* CAMERA CONTROLS */}
           <div className="flex flex-wrap gap-2">
-            {!stream && !captured && (
-              <Button onClick={() => startCamera()}>
-                <Camera data-icon="inline-start" />
-                START CAMERA
-              </Button>
-            )}
-
-            {stream && !captured && (
-              <>
-                <Button onClick={capture}>
-                  CAPTURE FRAME
-                </Button>
-
+            {!stream &&
+              !captured && (
                 <Button
-                  variant="outline"
-                  onClick={switchCamera}
-                  aria-label={
-                    cameraFacing ===
-                    'environment'
-                      ? 'Switch to front camera'
-                      : 'Switch to rear camera'
+                  onClick={() =>
+                    startCamera()
                   }
                 >
-                  <SwitchCamera data-icon="inline-start" />
-                  SWITCH CAMERA
+                  <Camera data-icon="inline-start" />
+                  START CAMERA
                 </Button>
-              </>
-            )}
+              )}
+
+            {stream &&
+              !captured && (
+                <>
+                  <Button
+                    onClick={
+                      capture
+                    }
+                  >
+                    CAPTURE FRAME
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    onClick={
+                      switchCamera
+                    }
+                    aria-label={
+                      cameraFacing ===
+                      'environment'
+                        ? 'Switch to front camera'
+                        : 'Switch to rear camera'
+                    }
+                  >
+                    <SwitchCamera data-icon="inline-start" />
+                    SWITCH CAMERA
+                  </Button>
+                </>
+              )}
 
             {captured && (
               <Button
                 variant="outline"
-                onClick={retake}
+                onClick={
+                  retake
+                }
               >
                 RETAKE
               </Button>
@@ -735,18 +1016,25 @@ export default function Page() {
             {stream && (
               <Button
                 variant="outline"
-                onClick={stopCamera}
+                onClick={
+                  stopCamera
+                }
               >
                 STOP CAMERA
               </Button>
             )}
 
-            {(step === 'AXIS' ||
-              step === 'SCALE' ||
-              step === 'PROFILE') && (
+            {(step ===
+              'AXIS' ||
+              step ===
+                'SCALE' ||
+              step ===
+                'PROFILE') && (
               <Button
                 variant="outline"
-                onClick={resetStep}
+                onClick={
+                  resetStep
+                }
               >
                 <Trash2 data-icon="inline-start" />
                 RESET {step}
@@ -755,7 +1043,8 @@ export default function Page() {
           </div>
 
           {/* SCALE */}
-          {step === 'SCALE' && (
+          {step ===
+            'SCALE' && (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <span className="text-xs text-muted-foreground">
@@ -763,7 +1052,10 @@ export default function Page() {
                 </span>
 
                 <strong className="block text-xl">
-                  {Math.round(axisPixel)} px
+                  {Math.round(
+                    axisPixel,
+                  )}{' '}
+                  px
                 </strong>
 
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -776,10 +1068,15 @@ export default function Page() {
 
                 <input
                   className="mt-1 h-11 w-full rounded-md border border-input bg-background px-3 text-base text-foreground"
-                  value={realLength}
-                  onChange={(event) =>
+                  value={
+                    realLength
+                  }
+                  onChange={(
+                    event,
+                  ) =>
                     setRealLength(
-                      event.target.value,
+                      event.target
+                        .value,
                     )
                   }
                   type="number"
@@ -793,14 +1090,18 @@ export default function Page() {
                 </span>
               </label>
 
-              {scaleMmPerPx > 0 && (
+              {scaleMmPerPx >
+                0 && (
                 <div className="sm:col-span-2">
                   <span className="text-xs text-muted-foreground">
                     SCALE
                   </span>
 
                   <strong className="block text-xl">
-                    {scaleMmPerPx.toFixed(4)} mm / px
+                    {scaleMmPerPx.toFixed(
+                      4,
+                    )}{' '}
+                    mm / px
                   </strong>
                 </div>
               )}
@@ -808,16 +1109,20 @@ export default function Page() {
           )}
 
           {/* PROFILE */}
-          {step === 'PROFILE' && (
+          {step ===
+            'PROFILE' && (
             <div className="flex flex-wrap items-end gap-2">
               <Button
                 variant={
-                  side === 'TOP'
+                  side ===
+                  'TOP'
                     ? 'default'
                     : 'outline'
                 }
                 onClick={() =>
-                  setSide('TOP')
+                  setSide(
+                    'TOP',
+                  )
                 }
               >
                 TOP
@@ -825,12 +1130,15 @@ export default function Page() {
 
               <Button
                 variant={
-                  side === 'BOTTOM'
+                  side ===
+                  'BOTTOM'
                     ? 'default'
                     : 'outline'
                 }
                 onClick={() =>
-                  setSide('BOTTOM')
+                  setSide(
+                    'BOTTOM',
+                  )
                 }
               >
                 BOTTOM
@@ -842,9 +1150,12 @@ export default function Page() {
                 <input
                   className="mt-1 h-11 w-20 rounded-md border border-input bg-background px-3 text-base text-foreground"
                   value={count}
-                  onChange={(event) =>
+                  onChange={(
+                    event,
+                  ) =>
                     setCount(
-                      event.target.value,
+                      event.target
+                        .value,
                     )
                   }
                   type="number"
@@ -857,7 +1168,8 @@ export default function Page() {
           )}
 
           {/* RESULT */}
-          {step === 'RESULT' && (
+          {step ===
+            'RESULT' && (
             <div className="flex flex-col gap-3">
               <div>
                 <p className="mb-2 text-xs font-semibold text-muted-foreground">
@@ -865,12 +1177,15 @@ export default function Page() {
                 </p>
 
                 <pre className="max-h-64 overflow-auto rounded-lg bg-muted p-3 text-xs leading-5">
-                  {output || 'No points'}
+                  {output ||
+                    'No points'}
                 </pre>
               </div>
 
               <Button
-                onClick={() => copy(output)}
+                onClick={() =>
+                  copy(output)
+                }
                 disabled={!output}
               >
                 <Copy data-icon="inline-start" />
@@ -879,7 +1194,20 @@ export default function Page() {
 
               <Button
                 variant="outline"
-                onClick={() => copy(json)}
+                onClick={
+                  shareCoordinates
+                }
+                disabled={!freeFEM}
+              >
+                <Share2 data-icon="inline-start" />
+                SHARE / AIRDROP
+              </Button>
+
+              <Button
+                variant="outline"
+                onClick={() =>
+                  copy(json)
+                }
                 disabled={!json}
               >
                 COPY JSON
@@ -887,7 +1215,9 @@ export default function Page() {
 
               <Button
                 variant="outline"
-                onClick={() => copy(csv)}
+                onClick={() =>
+                  copy(csv)
+                }
                 disabled={!csv}
               >
                 COPY CSV
@@ -909,7 +1239,9 @@ export default function Page() {
           <div className="flex justify-between gap-3 border-t border-border pt-5">
             <Button
               variant="outline"
-              disabled={stepIndex === 0}
+              disabled={
+                stepIndex === 0
+              }
               onClick={() =>
                 setStepIndex(
                   (current) =>
@@ -922,7 +1254,9 @@ export default function Page() {
 
             <Button
               onClick={next}
-              disabled={stepIndex === 3}
+              disabled={
+                stepIndex === 3
+              }
             >
               NEXT
             </Button>

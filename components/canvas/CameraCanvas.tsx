@@ -112,20 +112,35 @@ export const CameraCanvas = forwardRef<
   )
 
   /**
-   * Attach the MediaStream to the video element.
+   * Attach MediaStream to the video element.
    */
   useEffect(() => {
     const video = videoRef.current
 
-    if (!video) return
+    if (!video) {
+      return
+    }
+
+    video.srcObject = null
+
+    if (!stream) {
+      return
+    }
 
     video.srcObject = stream
 
-    if (stream) {
-      void video.play().catch(() => {
-        // Browser may require a user gesture.
-      })
+    const playVideo = async () => {
+      try {
+        await video.play()
+      } catch (error) {
+        console.warn(
+          'Video autoplay/play failed:',
+          error,
+        )
+      }
     }
+
+    void playVideo()
   }, [stream])
 
   /**
@@ -140,9 +155,9 @@ export const CameraCanvas = forwardRef<
 
       current
         ?.getTracks()
-        .forEach((track) =>
-          track.stop(),
-        )
+        .forEach((track) => {
+          track.stop()
+        })
     }
   }, [])
 
@@ -180,10 +195,8 @@ export const CameraCanvas = forwardRef<
       event.clientY - rect.top
 
     /**
-     * Ignore pointer events outside the actual
-     * displayed frame.
-     *
-     * Do NOT clamp outside points into the frame.
+     * Ignore pointer events outside
+     * the displayed frame.
      */
     if (
       localX < 0 ||
@@ -264,18 +277,20 @@ export const CameraCanvas = forwardRef<
         className="relative mx-auto w-full max-w-full"
         style={{
           aspectRatio: `${width} / ${height}`,
+          touchAction: 'none',
         }}
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={stopDrawing}
         onPointerCancel={stopDrawing}
         onPointerLeave={stopDrawing}
-        style-touch-action="none"
       >
         {fixedFrame ? (
           <canvas
             ref={(node) => {
-              if (!node) return
+              if (!node) {
+                return
+              }
 
               node.width = fixedFrame.width
               node.height = fixedFrame.height
@@ -283,7 +298,9 @@ export const CameraCanvas = forwardRef<
               const context =
                 node.getContext('2d')
 
-              if (!context) return
+              if (!context) {
+                return
+              }
 
               context.clearRect(
                 0,
