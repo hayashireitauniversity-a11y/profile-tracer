@@ -1,22 +1,16 @@
 'use client'
 
-import {
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
-
+import { useMemo, useRef, useState } from 'react'
 import {
   Camera,
   Check,
   Copy,
   RotateCcw,
-  RefreshCw,
   Trash2,
+  SwitchCamera,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-
 import {
   CameraCanvas,
   type CameraCanvasHandle,
@@ -39,24 +33,20 @@ import {
   generateJSON,
 } from '@/lib/export'
 
-type Step =
-  | 'AXIS'
-  | 'SCALE'
-  | 'PROFILE'
-  | 'RESULT'
+type Step = 'AXIS' | 'SCALE' | 'PROFILE' | 'RESULT'
 
 type Pair = {
   a: Point | null
   b: Point | null
 }
 
-const steps: Step[] = [
-  'AXIS',
-  'SCALE',
-  'PROFILE',
-  'RESULT',
-]
+const steps: Step[] = ['AXIS', 'SCALE', 'PROFILE', 'RESULT']
 
+/**
+ * Drawing overlay
+ *
+ * All coordinates are Canvas-local coordinates.
+ */
 function Overlay({
   axis,
   scale,
@@ -78,8 +68,6 @@ function Overlay({
       aria-hidden="true"
     >
       <g vectorEffect="non-scaling-stroke">
-
-        {/* AXIS */}
         {axis.a && axis.b && (
           <>
             <line
@@ -89,25 +77,25 @@ function Overlay({
               y2={axis.b.y}
               stroke="var(--primary)"
               strokeWidth="4"
+              strokeLinecap="round"
             />
 
             <circle
               cx={axis.a.x}
               cy={axis.a.y}
-              r="8"
+              r="9"
               fill="var(--primary)"
             />
 
             <circle
               cx={axis.b.x}
               cy={axis.b.y}
-              r="8"
+              r="9"
               fill="var(--primary)"
             />
           </>
         )}
 
-        {/* SCALE */}
         {scale.a && scale.b && (
           <>
             <line
@@ -117,6 +105,7 @@ function Overlay({
               y2={scale.b.y}
               stroke="var(--accent-foreground)"
               strokeWidth="4"
+              strokeLinecap="round"
             />
 
             <circle
@@ -135,14 +124,9 @@ function Overlay({
           </>
         )}
 
-        {/* PROFILE */}
         {trace.length > 1 && (
           <polyline
-            points={trace
-              .map(
-                (p) => `${p.x},${p.y}`
-              )
-              .join(' ')}
+            points={trace.map((p) => `${p.x},${p.y}`).join(' ')}
             fill="none"
             stroke="var(--accent-foreground)"
             strokeWidth="4"
@@ -150,105 +134,84 @@ function Overlay({
             strokeLinejoin="round"
           />
         )}
-
       </g>
     </svg>
   )
 }
 
 export default function Page() {
-  const [stepIndex, setStepIndex] =
-    useState(0)
+  const [stepIndex, setStepIndex] = useState(0)
 
-  const [axis, setAxis] =
-    useState<Pair>({
-      a: null,
-      b: null,
-    })
+  const [axis, setAxis] = useState<Pair>({
+    a: null,
+    b: null,
+  })
 
-  const [scalePoints, setScalePoints] =
-    useState<Pair>({
-      a: null,
-      b: null,
-    })
+  const [scalePoints, setScalePoints] = useState<Pair>({
+    a: null,
+    b: null,
+  })
 
-  const [trace, setTrace] =
-    useState<Point[]>([])
+  const [trace, setTrace] = useState<Point[]>([])
 
   /**
-   * Known physical cylinder generatrix length.
+   * Known physical length of the cylinder generatrix.
    *
-   * IMPORTANT:
-   * This is NOT diameter.
+   * This is NOT the diameter.
    */
-  const [realLength, setRealLength] =
-    useState('100')
+  const [realLength, setRealLength] = useState('100')
 
-  const [count, setCount] =
-    useState('24')
+  const [count, setCount] = useState('24')
 
-  const [side, setSide] =
-    useState<'TOP' | 'BOTTOM'>('TOP')
+  /**
+   * TOP / BOTTOM is descriptive only.
+   * It does not change the sign of radius.
+   */
+  const [side, setSide] = useState<'TOP' | 'BOTTOM'>('TOP')
 
-  const [error, setError] =
-    useState('')
+  const [error, setError] = useState('')
 
-  const [stream, setStream] =
-    useState<MediaStream | null>(null)
+  const [stream, setStream] = useState<MediaStream | null>(null)
 
   const [fixedFrame, setFixedFrame] =
     useState<HTMLCanvasElement | null>(null)
 
-  const [captured, setCaptured] =
-    useState(false)
+  const [captured, setCaptured] = useState(false)
 
   /**
-   * Current camera:
-   *
    * environment = rear camera
    * user        = front camera
    */
   const [cameraFacing, setCameraFacing] =
-    useState<'environment' | 'user'>(
-      'environment'
-    )
+    useState<'environment' | 'user'>('environment')
 
-  const canvasRef =
-    useRef<CameraCanvasHandle>(null)
+  const canvasRef = useRef<CameraCanvasHandle>(null)
 
   const step = steps[stepIndex]
 
   /**
    * Start camera.
    *
-   * Camera selection:
-   *
-   * 1. exact facingMode
-   * 2. ideal facingMode
-   * 3. any available camera
-   *
-   * This avoids making the application
-   * unusable on devices where a requested
-   * facingMode cannot be satisfied.
+   * We first try exact facingMode,
+   * then ideal facingMode,
+   * then a generic camera.
    */
   const startCamera = async (
-    facing: 'environment' | 'user' = cameraFacing
+    facing: 'environment' | 'user' = cameraFacing,
   ) => {
-    try {
-      if (
-        typeof window === 'undefined' ||
-        !navigator.mediaDevices?.getUserMedia
-      ) {
-        setError(
-          'この環境ではカメラを使用できません。HTTPSまたはlocalhostでアクセスしてください。'
-        )
-        return
-      }
+    if (
+      typeof navigator === 'undefined' ||
+      !navigator.mediaDevices?.getUserMedia
+    ) {
+      setError('このブラウザではカメラを利用できません。')
+      return
+    }
 
-      let next: MediaStream
+    try {
+      let nextStream: MediaStream | null = null
 
       try {
-        next =
+        nextStream =
           await navigator.mediaDevices.getUserMedia({
             video: {
               facingMode: {
@@ -259,7 +222,7 @@ export default function Page() {
           })
       } catch {
         try {
-          next =
+          nextStream =
             await navigator.mediaDevices.getUserMedia({
               video: {
                 facingMode: {
@@ -269,7 +232,7 @@ export default function Page() {
               audio: false,
             })
         } catch {
-          next =
+          nextStream =
             await navigator.mediaDevices.getUserMedia({
               video: true,
               audio: false,
@@ -277,96 +240,48 @@ export default function Page() {
         }
       }
 
-      /**
-       * Stop the previous stream only after
-       * a new stream has successfully started.
-       */
-      stream
-        ?.getTracks()
-        .forEach((track) => track.stop())
+      stream?.getTracks().forEach((track) => track.stop())
 
-      setStream(next)
+      setStream(nextStream)
       setCameraFacing(facing)
       setError('')
     } catch (cameraError) {
-      const name =
-        cameraError instanceof DOMException
-          ? cameraError.name
-          : ''
+      console.error(cameraError)
 
-      if (
-        name === 'NotAllowedError'
-      ) {
-        setError(
-          'カメラの使用が許可されていません。ブラウザのカメラ権限を確認してください。'
-        )
-      } else if (
-        name === 'NotFoundError'
-      ) {
-        setError(
-          '使用可能なカメラが見つかりません。'
-        )
-      } else if (
-        name === 'NotReadableError'
-      ) {
-        setError(
-          'カメラを使用できません。他のアプリがカメラを使用していないか確認してください。'
-        )
-      } else if (
-        name === 'SecurityError'
-      ) {
-        setError(
-          'カメラはHTTPSまたはlocalhostでのみ使用できます。'
-        )
-      } else {
-        setError(
-          'カメラを開始できません。'
-        )
-      }
+      setError(
+        'カメラを開始できません。HTTPSまたはlocalhostで、カメラの使用許可を確認してください。',
+      )
     }
   }
 
   /**
-   * Switch between rear and front camera.
+   * Switch between front and rear cameras.
    *
-   * Existing measurement data is NOT changed.
-   *
-   * The new camera becomes the measurement
-   * source only after CAPTURE FRAME.
+   * Camera switching is intentionally disabled after capture.
+   * The fixed frame must remain the measurement basis.
    */
   const switchCamera = async () => {
+    if (captured) return
+
     const nextFacing =
       cameraFacing === 'environment'
         ? 'user'
         : 'environment'
 
-    await startCamera(
-      nextFacing
-    )
+    await startCamera(nextFacing)
   }
 
-  /**
-   * Stop camera.
-   *
-   * Measurement data remains intact.
-   * The live/fixed camera frame is removed.
-   */
   const stopCamera = () => {
-    stream
-      ?.getTracks()
-      .forEach((track) => track.stop())
+    stream?.getTracks().forEach((track) => track.stop())
 
     setStream(null)
-    setFixedFrame(null)
-    setCaptured(false)
   }
 
   /**
-   * Capture current camera frame.
+   * Capture the native video frame.
    */
   const capture = async () => {
-    const result =
-      await canvasRef.current?.capture()
+    const result = await canvasRef.current?.capture()
 
     if (result) {
       setCaptured(true)
@@ -375,8 +290,9 @@ export default function Page() {
   }
 
   /**
-   * Return to live camera and discard
-   * the current measurement frame/data.
+   * Retake replaces the measurement frame.
+   *
+   * All geometry based on the old frame is cleared.
    */
   const retake = () => {
     setFixedFrame(null)
@@ -395,90 +311,86 @@ export default function Page() {
     setTrace([])
 
     setStepIndex(0)
+
     setError('')
   }
 
   /**
-   * Calculate axis direction.
+   * AXIS mathematics.
    */
   const axisMath =
     axis.a && axis.b
-      ? normalizeAxis(
-          axis.a,
-          axis.b
-        )
+      ? normalizeAxis(axis.a, axis.b)
       : null
 
   /**
    * SCALE:
    *
-   * Project the SCALE line onto the
-   * rotation-axis direction.
+   * The SCALE line itself may be diagonal.
    *
-   * This projected length is the pixel
-   * representation of the known cylinder
-   * generatrix length.
+   * Only the component parallel to the rotation axis
+   * is used for scaling.
    */
-  const scalePixel =
-    axisMath &&
-    scalePoints.a &&
-    scalePoints.b
+  const axisPixel =
+    axisMath && scalePoints.a && scalePoints.b
       ? projectScaleToAxisDirection(
           scalePoints.a,
           scalePoints.b,
-          axisMath.direction
+          axisMath.direction,
         )
       : 0
 
   /**
-   * Physical scale:
+   * mm / pixel
    *
-   * known generatrix length [mm]
-   * /
-   * axis-parallel SCALE length [px]
-   *
-   * = mm / px
+   * known physical generatrix length
+   * --------------------------------
+   * projected SCALE length in pixels
    */
   const scaleMmPerPx =
-    scalePixel > 0 &&
-    Number(realLength) > 0
+    axisPixel > 0 && Number(realLength) > 0
       ? calculateScale(
           Number(realLength),
-          scalePixel
+          axisPixel,
         )
       : 0
 
   /**
-   * Convert traced profile into
-   * evenly spaced profile points.
+   * Convert the traced profile into
+   * evenly spaced arc-length samples.
    */
   const profile = useMemo(() => {
     if (
       !axis.a ||
       !axisMath ||
       scaleMmPerPx <= 0 ||
-      trace.length <= 1
+      trace.length < 2
     ) {
       return []
     }
 
-    const targetCount =
-      Math.max(
-        2,
-        Number(count)
-      )
+    const targetCount = Math.max(
+      2,
+      Number(count) || 0,
+    )
 
-    return resampleByArcLength(
+    if (targetCount < 2) {
+      return []
+    }
+
+    const sampled = resampleByArcLength(
       trace,
-      targetCount
-    ).map((p) =>
+      targetCount,
+    )
+
+    return sampled.map((point) =>
       pointToProfilePoint(
-        p,
+        point,
         axis.a!,
         axisMath.direction,
         axisMath.radialDirection,
-        scaleMmPerPx
-      )
+        scaleMmPerPx,
+      ),
     )
   }, [
     axis,
@@ -489,74 +401,42 @@ export default function Page() {
   ])
 
   /**
-   * Handle AXIS / SCALE point selection.
+   * Handle a single point in AXIS / SCALE.
    */
   const point = (p: Point) => {
     if (step === 'AXIS') {
-      setAxis((value) =>
-        value.a
+      setAxis((current) =>
+        current.a
           ? {
-              a: value.a,
+              a: current.a,
               b: p,
             }
           : {
               a: p,
               b: null,
-            }
+            },
       )
-
-      /**
-       * Changing AXIS invalidates SCALE
-       * and PROFILE.
-       */
-      setScalePoints({
-        a: null,
-        b: null,
-      })
-
-      setTrace([])
 
       return
     }
 
     if (step === 'SCALE') {
-      setScalePoints((value) =>
-        value.a
+      setScalePoints((current) =>
+        current.a
           ? {
-              a: value.a,
+              a: current.a,
               b: p,
             }
           : {
               a: p,
               b: null,
-            }
+            },
       )
-
-      /**
-       * Changing SCALE invalidates PROFILE.
-       */
-      setTrace([])
-
-      return
     }
   }
 
   /**
-   * Trace callback.
-   */
-  const tracePoint = (
-    p: Point
-  ) => {
-    setTrace(
-      (value) => [
-        ...value,
-        p,
-      ]
-    )
-  }
-
-  /**
-   * Reset current step.
+   * Reset only the current drawing step.
    */
   const resetStep = () => {
     setError('')
@@ -573,8 +453,6 @@ export default function Page() {
       })
 
       setTrace([])
-
-      return
     }
 
     if (step === 'SCALE') {
@@ -584,40 +462,32 @@ export default function Page() {
       })
 
       setTrace([])
-
-      return
     }
 
     if (step === 'PROFILE') {
       setTrace([])
-
-      return
     }
   }
 
   /**
-   * Validate and go to next step.
+   * Move to the next step after validation.
    */
   const next = () => {
     setError('')
 
     if (!captured) {
       setError(
-        '先にCAPTURE FRAMEを実行してください。'
+        '先にCAPTURE FRAMEを実行してください。',
       )
       return
     }
 
     if (
       step === 'AXIS' &&
-      (
-        !axisMath ||
-        !axis.a ||
-        !axis.b
-      )
+      (!axisMath || !axis.a || !axis.b)
     ) {
       setError(
-        'AXISの2点を指定してください。'
+        'AXISの2点を指定してください。',
       )
       return
     }
@@ -627,12 +497,12 @@ export default function Page() {
       (
         !scalePoints.a ||
         !scalePoints.b ||
-        scalePixel <= 0 ||
+        axisPixel <= 0 ||
         Number(realLength) <= 0
       )
     ) {
       setError(
-        'SCALEの2点と円柱の母線長を確認してください。'
+        'SCALEの2点と円柱の母線長を確認してください。',
       )
       return
     }
@@ -646,27 +516,23 @@ export default function Page() {
       )
     ) {
       setError(
-        'トレース点とサンプリング点数を確認してください。'
+        'トレース点とサンプリング点数を確認してください。',
       )
       return
     }
 
-    setStepIndex(
-      (index) =>
-        Math.min(
-          3,
-          index + 1
-        )
+    setStepIndex((current) =>
+      Math.min(3, current + 1),
     )
   }
 
   /**
-   * Global reset.
+   * Full application reset.
    */
   const reset = () => {
-    stream
-      ?.getTracks()
-      .forEach((track) => track.stop())
+    stream?.getTracks().forEach((track) =>
+      track.stop(),
+    )
 
     setStream(null)
     setFixedFrame(null)
@@ -686,59 +552,37 @@ export default function Page() {
 
     setTrace([])
 
-    setCameraFacing(
-      'environment'
-    )
-
     setError('')
   }
 
-  /**
-   * Export.
-   *
-   * Grasshopper:
-   *
-   * X = axis direction
-   * Y = 0
-   * Z = radius
-   */
   const output =
-    generateGrasshopperPointList(
-      profile
-    )
+    generateGrasshopperPointList(profile)
 
-  const json =
-    generateJSON(profile)
+  const json = generateJSON(profile)
 
-  const csv =
-    generateCSV(profile)
+  const csv = generateCSV(profile)
 
-  /**
-   * Copy text.
-   */
-  const copy = async (
-    value: string
-  ) => {
+  const copy = async (value: string) => {
     try {
       await copyText(value)
       setError('コピーしました。')
     } catch {
       setError(
-        'コピーに失敗しました。'
+        'コピーに失敗しました。',
       )
     }
   }
 
-  const full =
-    step !== 'RESULT'
-
+  /**
+   * The drawing surface is always the main visual area.
+   *
+   * The control panel is BELOW it, never over it.
+   */
   return (
     <main className="min-h-screen bg-background">
-
       {/* HEADER */}
       <header className="border-b border-border bg-card">
         <div className="mx-auto flex max-w-[1400px] items-center justify-between gap-4 px-6 py-5">
-
           <div>
             <p className="font-mono text-xs font-bold tracking-[.2em] text-primary">
               GRASSHOPPER / PROFILE TRACER
@@ -757,97 +601,73 @@ export default function Page() {
           >
             <RotateCcw />
           </Button>
-
         </div>
       </header>
 
-      {/* STEP INDICATOR */}
+      {/* WORKFLOW */}
       <nav
-        className="mx-auto flex max-w-[1400px] gap-3 px-6 py-5"
+        className="mx-auto flex max-w-[1400px] gap-3 overflow-x-auto px-6 py-5"
         aria-label="Workflow steps"
       >
-        {steps.map(
-          (item, index) => (
-            <div
-              key={item}
-              className={`flex flex-1 items-center gap-3 rounded-lg border px-4 py-3 ${
-                index === stepIndex
-                  ? 'border-primary bg-primary text-primary-foreground'
-                  : 'border-border bg-card'
-              }`}
-            >
-              <span className="font-mono text-xs font-bold">
-                0{index + 1}
-              </span>
+        {steps.map((item, index) => (
+          <div
+            key={item}
+            className={`flex min-w-[150px] flex-1 items-center gap-3 rounded-lg border px-4 py-3 ${
+              index === stepIndex
+                ? 'border-primary bg-primary text-primary-foreground'
+                : 'border-border bg-card'
+            }`}
+          >
+            <span className="font-mono text-xs font-bold">
+              0{index + 1}
+            </span>
 
-              <span className="font-semibold">
-                {index < stepIndex && (
-                  <Check className="mr-1 inline" />
-                )}
+            <span className="font-semibold">
+              {index < stepIndex && (
+                <Check className="mr-1 inline size-4" />
+              )}
 
-                {item}
-              </span>
-            </div>
-          )
-        )}
+              {item}
+            </span>
+          </div>
+        ))}
       </nav>
 
       {/* MAIN */}
-      <section
-        className={
-          full
-            ? 'relative min-h-[calc(100dvh-145px)]'
-            : 'mx-auto grid max-w-[1400px] gap-6 px-6 pb-8 lg:grid-cols-[1fr_360px]'
-        }
-      >
-
-        {/* CAMERA */}
-        <div
-          className={
-            full
-              ? 'relative w-full'
-              : 'rounded-xl border border-border bg-card p-3'
-          }
-        >
+      <section className="mx-auto flex max-w-[1400px] flex-col gap-6 px-6 pb-10">
+        {/* CAMERA / FIXED FRAME */}
+        <div className="rounded-xl border border-border bg-card p-3">
           <CameraCanvas
             ref={canvasRef}
             stream={stream}
             fixedFrame={fixedFrame}
             onFixedFrame={setFixedFrame}
             onPoint={point}
-            tracing={
-              step === 'PROFILE'
+            tracing={step === 'PROFILE'}
+            onTrace={(p) =>
+              setTrace((current) => [
+                ...current,
+                p,
+              ])
             }
-            onTrace={tracePoint}
             overlays={
               <Overlay
                 axis={axis}
                 scale={scalePoints}
                 trace={trace}
                 width={
-                  fixedFrame?.width ??
-                  16
+                  fixedFrame?.width ?? 16
                 }
                 height={
-                  fixedFrame?.height ??
-                  9
+                  fixedFrame?.height ?? 9
                 }
               />
             }
-            fullScreen={full}
           />
         </div>
 
-        {/* CONTROL PANEL */}
-        <aside
-          className={
-            full
-              ? 'absolute left-4 right-4 top-4 z-10 flex max-w-md flex-col gap-4 rounded-xl border border-border bg-card/95 p-5 shadow-lg backdrop-blur'
-              : 'flex flex-col gap-5 rounded-xl border border-border bg-card p-6'
-          }
-        >
-
-          {/* DESCRIPTION */}
+        {/* CONTROLS */}
+        <aside className="flex flex-col gap-5 rounded-xl border border-border bg-card p-6">
           <div>
             <p className="font-mono text-xs font-bold tracking-[.2em] text-muted-foreground">
               STEP 0{stepIndex + 1}
@@ -859,51 +679,48 @@ export default function Page() {
 
             <p className="mt-3 leading-6 text-muted-foreground">
               {step === 'AXIS' &&
-                '回転軸の両端を2点タップしてください。A→Bが正のX方向になります。'}
+                '回転軸の両端を2点タップしてください'}
 
               {step === 'SCALE' &&
-                '既知の円柱母線に沿って2点をタップしてください。回転軸に平行な成分を入力した母線長と対応させます。'}
+                '円柱の母線方向に対応する線分を2点タップしてください'}
 
               {step === 'PROFILE' &&
-                'TOPまたはBOTTOMを選択し、輪郭を指でなぞってください。'}
+                'TOPまたはBOTTOMを選択し、輪郭を指でなぞってください'}
 
               {step === 'RESULT' &&
-                '取得した断面座標を確認・出力できます。'}
+                '取得した断面座標を確認・出力できます'}
             </p>
           </div>
 
           {/* CAMERA CONTROLS */}
           <div className="flex flex-wrap gap-2">
-
-            {!stream && (
-              <Button
-                onClick={() =>
-                  startCamera(
-                    cameraFacing
-                  )
-                }
-              >
+            {!stream && !captured && (
+              <Button onClick={() => startCamera()}>
                 <Camera data-icon="inline-start" />
                 START CAMERA
               </Button>
             )}
 
             {stream && !captured && (
-              <Button
-                onClick={capture}
-              >
-                CAPTURE FRAME
-              </Button>
-            )}
+              <>
+                <Button onClick={capture}>
+                  CAPTURE FRAME
+                </Button>
 
-            {stream && !captured && (
-              <Button
-                variant="outline"
-                onClick={switchCamera}
-              >
-                <RefreshCw data-icon="inline-start" />
-                SWITCH CAMERA
-              </Button>
+                <Button
+                  variant="outline"
+                  onClick={switchCamera}
+                  aria-label={
+                    cameraFacing ===
+                    'environment'
+                      ? 'Switch to front camera'
+                      : 'Switch to rear camera'
+                  }
+                >
+                  <SwitchCamera data-icon="inline-start" />
+                  SWITCH CAMERA
+                </Button>
+              </>
             )}
 
             {captured && (
@@ -935,52 +752,34 @@ export default function Page() {
                 RESET {step}
               </Button>
             )}
-
           </div>
-
-          {/* CURRENT CAMERA */}
-          {stream && !captured && (
-            <div className="text-xs text-muted-foreground">
-              CAMERA:{' '}
-              <strong className="text-foreground">
-                {cameraFacing ===
-                'environment'
-                  ? 'REAR'
-                  : 'FRONT'}
-              </strong>
-            </div>
-          )}
 
           {/* SCALE */}
           {step === 'SCALE' && (
-            <div className="space-y-4">
-
-              <div className="rounded-lg border border-border p-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
                 <span className="text-xs text-muted-foreground">
-                  AXIS-PARALLEL LENGTH
+                  PROJECTED SCALE
                 </span>
 
                 <strong className="block text-xl">
-                  {Math.round(
-                    scalePixel
-                  )}{' '}
-                  px
+                  {Math.round(axisPixel)} px
                 </strong>
 
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  SCALE線分を回転軸方向へ射影した長さ
+                <p className="mt-1 text-xs text-muted-foreground">
+                  AXIS方向への投影長
                 </p>
               </div>
 
-              <label className="block text-xs text-muted-foreground">
-                CYLINDER GENERATRIX LENGTH
+              <label className="text-xs text-muted-foreground">
+                CYLINDER GENERATRIX
 
                 <input
                   className="mt-1 h-11 w-full rounded-md border border-input bg-background px-3 text-base text-foreground"
                   value={realLength}
                   onChange={(event) =>
                     setRealLength(
-                      event.target.value
+                      event.target.value,
                     )
                   }
                   type="number"
@@ -994,25 +793,23 @@ export default function Page() {
                 </span>
               </label>
 
-              <div className="rounded-lg border border-border p-3">
-                <span className="text-xs text-muted-foreground">
-                  SCALE
-                </span>
+              {scaleMmPerPx > 0 && (
+                <div className="sm:col-span-2">
+                  <span className="text-xs text-muted-foreground">
+                    SCALE
+                  </span>
 
-                <strong className="block text-xl">
-                  {scaleMmPerPx > 0
-                    ? `${scaleMmPerPx.toFixed(4)} mm/px`
-                    : '—'}
-                </strong>
-              </div>
-
+                  <strong className="block text-xl">
+                    {scaleMmPerPx.toFixed(4)} mm / px
+                  </strong>
+                </div>
+              )}
             </div>
           )}
 
           {/* PROFILE */}
           {step === 'PROFILE' && (
-            <div className="flex gap-2">
-
+            <div className="flex flex-wrap items-end gap-2">
               <Button
                 variant={
                   side === 'TOP'
@@ -1047,7 +844,7 @@ export default function Page() {
                   value={count}
                   onChange={(event) =>
                     setCount(
-                      event.target.value
+                      event.target.value,
                     )
                   }
                   type="number"
@@ -1056,22 +853,25 @@ export default function Page() {
                   inputMode="numeric"
                 />
               </label>
-
             </div>
           )}
 
           {/* RESULT */}
           {step === 'RESULT' && (
             <div className="flex flex-col gap-3">
+              <div>
+                <p className="mb-2 text-xs font-semibold text-muted-foreground">
+                  GRASSHOPPER POINT LIST
+                </p>
 
-              <pre className="max-h-48 overflow-auto rounded-lg bg-muted p-3 text-xs leading-5">
-                {output || 'No points'}
-              </pre>
+                <pre className="max-h-64 overflow-auto rounded-lg bg-muted p-3 text-xs leading-5">
+                  {output || 'No points'}
+                </pre>
+              </div>
 
               <Button
-                onClick={() =>
-                  copy(output)
-                }
+                onClick={() => copy(output)}
+                disabled={!output}
               >
                 <Copy data-icon="inline-start" />
                 COPY
@@ -1079,26 +879,23 @@ export default function Page() {
 
               <Button
                 variant="outline"
-                onClick={() =>
-                  copy(json)
-                }
+                onClick={() => copy(json)}
+                disabled={!json}
               >
                 COPY JSON
               </Button>
 
               <Button
                 variant="outline"
-                onClick={() =>
-                  copy(csv)
-                }
+                onClick={() => copy(csv)}
+                disabled={!csv}
               >
                 COPY CSV
               </Button>
-
             </div>
           )}
 
-          {/* ERROR */}
+          {/* ERROR / MESSAGE */}
           {error && (
             <p
               role="alert"
@@ -1109,17 +906,14 @@ export default function Page() {
           )}
 
           {/* NAVIGATION */}
-          <div className="flex justify-between gap-3 pt-2">
-
+          <div className="flex justify-between gap-3 border-t border-border pt-5">
             <Button
               variant="outline"
-              disabled={
-                stepIndex === 0
-              }
+              disabled={stepIndex === 0}
               onClick={() =>
                 setStepIndex(
-                  (index) =>
-                    index - 1
+                  (current) =>
+                    current - 1,
                 )
               }
             >
@@ -1128,15 +922,11 @@ export default function Page() {
 
             <Button
               onClick={next}
-              disabled={
-                stepIndex === 3
-              }
+              disabled={stepIndex === 3}
             >
               NEXT
             </Button>
-
           </div>
-
         </aside>
       </section>
     </main>

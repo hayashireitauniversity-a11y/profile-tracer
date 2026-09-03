@@ -2,13 +2,13 @@
  * Geometry utilities for Grasshopper
  * profile tracing.
  *
- * Coordinate system:
+ * Internal coordinate system:
  *
- * Internal:
- *   x = rotation-axis direction
- *   r = radial distance
+ *   x = distance along rotation axis
+ *   r = radial distance from rotation axis
  *
- * Grasshopper output:
+ * Grasshopper:
+ *
  *   X = x
  *   Y = 0
  *   Z = r
@@ -36,25 +36,17 @@ export interface ScaleState {
   pointB: Point | null
 
   /**
-   * SCALE line projected onto
-   * rotation-axis direction.
-   *
-   * Unit: pixel
+   * SCALE line projected onto the rotation axis.
    */
   axisPixel: number
 
   /**
-   * Known physical cylinder
-   * generatrix length.
-   *
-   * Unit: mm
+   * Known physical length of the cylinder generatrix.
    */
   realLengthMm: number
 
   /**
-   * Physical scale.
-   *
-   * Unit: mm / px
+   * Millimeters per pixel.
    */
   scaleMmPerPx: number
 }
@@ -63,60 +55,40 @@ export interface ScaleState {
  * Normalize the rotation axis.
  *
  * A -> B defines positive X.
+ *
+ * radialDirection is perpendicular to the axis.
  */
 export function normalizeAxis(
   pointA: Point,
-  pointB: Point
+  pointB: Point,
 ): {
   direction: Point
   radialDirection: Point
 } {
   const axisVector = {
-    x:
-      pointB.x -
-      pointA.x,
-
-    y:
-      pointB.y -
-      pointA.y,
+    x: pointB.x - pointA.x,
+    y: pointB.y - pointA.y,
   }
 
-  const axisLength =
-    Math.sqrt(
-      axisVector.x *
-        axisVector.x +
-        axisVector.y *
-          axisVector.y
-    )
+  const axisLength = Math.sqrt(
+    axisVector.x * axisVector.x +
+      axisVector.y * axisVector.y,
+  )
 
-  if (
-    axisLength === 0
-  ) {
+  if (axisLength === 0) {
     throw new Error(
-      'Axis points A and B cannot be identical'
+      'Axis points A and B cannot be identical',
     )
   }
 
   const direction = {
-    x:
-      axisVector.x /
-      axisLength,
-
-    y:
-      axisVector.y /
-      axisLength,
+    x: axisVector.x / axisLength,
+    y: axisVector.y / axisLength,
   }
 
-  /**
-   * 90° counterclockwise
-   * perpendicular direction.
-   */
   const radialDirection = {
-    x:
-      -direction.y,
-
-    y:
-      direction.x,
+    x: -direction.y,
+    y: direction.x,
   }
 
   return {
@@ -130,12 +102,9 @@ export function normalizeAxis(
  */
 export function dotProduct(
   a: Point,
-  b: Point
+  b: Point,
 ): number {
-  return (
-    a.x * b.x +
-    a.y * b.y
-  )
+  return a.x * b.x + a.y * b.y
 }
 
 /**
@@ -143,52 +112,33 @@ export function dotProduct(
  */
 export function distance(
   p1: Point,
-  p2: Point
+  p2: Point,
 ): number {
-  const dx =
-    p2.x - p1.x
-
-  const dy =
-    p2.y - p1.y
+  const dx = p2.x - p1.x
+  const dy = p2.y - p1.y
 
   return Math.sqrt(
-    dx * dx +
-      dy * dy
+    dx * dx + dy * dy,
   )
 }
 
 /**
- * Project the SCALE line onto
- * the rotation-axis direction.
+ * Project the SCALE line onto the rotation axis.
  *
- * IMPORTANT:
+ * This is the important SCALE definition:
  *
- * The perpendicular component is
- * intentionally ignored.
+ *     SCALE line
+ *          ↓
+ *     axis-parallel component
+ *          ↓
+ *     pixel length used for calibration
  *
- * The resulting pixel length is
- * interpreted as the image length of
- * the known cylinder generatrix.
- *
- * Example:
- *
- * Axis:
- *
- *   ───────────────────→
- *
- * SCALE:
- *
- *   ╲──────────────────
- *
- * If the axis-parallel component
- * is 200 px, this function returns
- * 200 px regardless of the perpendicular
- * component.
+ * The line itself can be diagonal.
  */
 export function projectScaleToAxisDirection(
   scalePointA: Point,
   scalePointB: Point,
-  axisDirection: Point
+  axisDirection: Point,
 ): number {
   const scaleVector = {
     x:
@@ -203,100 +153,74 @@ export function projectScaleToAxisDirection(
   return Math.abs(
     dotProduct(
       scaleVector,
-      axisDirection
-    )
+      axisDirection,
+    ),
   )
 }
 
 /**
- * Calculate physical scale.
+ * Calculate mm / pixel.
  *
- * Known physical cylinder generatrix
- * length [mm]
- * /
- * axis-parallel SCALE length [px]
- *
- * = mm / px
+ * Known physical cylinder generatrix length
+ * divided by the axis-parallel pixel length.
  */
 export function calculateScale(
   realLengthMm: number,
-  axisPixel: number
+  axisPixel: number,
 ): number {
-  if (
-    axisPixel <= 0
-  ) {
+  if (axisPixel <= 0) {
     throw new Error(
-      'Projected SCALE length must be greater than 0'
+      'Projected SCALE length must be greater than 0',
     )
   }
 
-  if (
-    realLengthMm <= 0
-  ) {
+  if (realLengthMm <= 0) {
     throw new Error(
-      'Cylinder generatrix length must be greater than 0'
+      'Cylinder generatrix length must be greater than 0',
     )
   }
 
-  return (
-    realLengthMm /
-    axisPixel
-  )
+  return realLengthMm / axisPixel
 }
 
 /**
- * Convert image point to
- * axis-local pixel coordinates.
+ * Convert a Canvas-local point into
+ * axis-local coordinates.
  *
  * xPixel:
- *   parallel to rotation axis
+ *   signed distance along A -> B.
  *
  * rPixel:
- *   perpendicular to rotation axis
- *
- * rPixel is always positive.
+ *   absolute distance from the rotation axis.
  */
 export function toAxisLocalCoordinates(
   point: Point,
   axisPointA: Point,
   axisDirection: Point,
-  radialDirection: Point
+  radialDirection: Point,
 ): {
   xPixel: number
   rPixel: number
 } {
   const relative = {
-    x:
-      point.x -
-      axisPointA.x,
-
-    y:
-      point.y -
-      axisPointA.y,
+    x: point.x - axisPointA.x,
+    y: point.y - axisPointA.y,
   }
 
-  /**
-   * Axis direction → X.
-   */
-  const xPixel =
-    dotProduct(
-      relative,
-      axisDirection
-    )
+  const xPixel = dotProduct(
+    relative,
+    axisDirection,
+  )
 
-  /**
-   * Radial direction → radius.
-   */
   const rPixelSigned =
     dotProduct(
       relative,
-      radialDirection
+      radialDirection,
     )
 
-  const rPixel =
-    Math.abs(
-      rPixelSigned
-    )
+  const rPixel = Math.abs(
+    rPixelSigned,
+  )
 
   return {
     xPixel,
@@ -309,24 +233,21 @@ export function toAxisLocalCoordinates(
  */
 export function pixelToMillimeter(
   pixel: number,
-  scaleMmPerPx: number
+  scaleMmPerPx: number,
 ): number {
-  return (
-    pixel *
-    scaleMmPerPx
-  )
+  return pixel * scaleMmPerPx
 }
 
 /**
- * Convert pixel-space profile point
- * into internal {x, r} millimeter data.
+ * Convert a Canvas-local point into
+ * final profile coordinates.
  */
 export function pointToProfilePoint(
   point: Point,
   axisPointA: Point,
   axisDirection: Point,
   radialDirection: Point,
-  scaleMmPerPx: number
+  scaleMmPerPx: number,
 ): ProfilePoint {
   const {
     xPixel,
@@ -336,20 +257,18 @@ export function pointToProfilePoint(
       point,
       axisPointA,
       axisDirection,
-      radialDirection
+      radialDirection,
     )
 
   return {
-    x:
-      pixelToMillimeter(
-        xPixel,
-        scaleMmPerPx
-      ),
+    x: pixelToMillimeter(
+      xPixel,
+      scaleMmPerPx,
+    ),
 
-    r:
-      pixelToMillimeter(
-        rPixel,
-        scaleMmPerPx
-      ),
+    r: pixelToMillimeter(
+      rPixel,
+      scaleMmPerPx,
+    ),
   }
 }
