@@ -49,11 +49,6 @@ const steps: Step[] = [
   'RESULT',
 ]
 
-/**
- * Drawing overlay
- *
- * All coordinates are Canvas-local coordinates.
- */
 function Overlay({
   axis,
   scale,
@@ -149,21 +144,24 @@ function Overlay({
 }
 
 /**
- * Generate FreeFEM coordinate variables.
+ * Generate FreeFEM-ready code.
+ *
+ * The generated text can be copied / shared directly
+ * into a FreeFEM source file.
+ *
+ * Coordinate variables:
+ *
+ * px1 = x coordinate along the rotation axis
+ * py1 = radius
  *
  * Example:
  *
- * dx1=0.000000;
- * dy1=12.345678;
- * dx2=4.123456;
- * dy2=13.456789;
- * dx3=8.246912;
- * dy3=14.567890;
+ * px1=0.000000;
+ * py1=12.345678;
+ * px2=4.123456;
+ * py2=13.456789;
  *
- * x = profile.x
- * r = profile.r
- *
- * No additional coordinate transformation is applied here.
+ * followed by the complete boundary definitions.
  */
 function generateFreeFEMVariables(
   points: Array<{
@@ -171,13 +169,135 @@ function generateFreeFEMVariables(
     r: number
   }>,
 ) {
-  return points
+  if (points.length < 2) {
+    return ''
+  }
+
+  const n = points.length
+
+  /*
+   * --------------------------------------------------
+   * Coordinates
+   * --------------------------------------------------
+   *
+   * The profile's x/r values are used directly.
+   * TOP / BOTTOM does not change the sign.
+   */
+  const coordinateLines = points
     .map(
       (point, index) =>
-        `dx${index + 1}=${point.x.toFixed(6)};\n` +
-        `dy${index + 1}=${point.r.toFixed(6)};`,
+        `px${index + 1}=${point.x.toFixed(6)};\n` +
+        `py${index + 1}=${point.r.toFixed(6)};`,
     )
     .join('\n')
+
+  /*
+   * --------------------------------------------------
+   * Bottom borders
+   * --------------------------------------------------
+   *
+   * Bottom1:
+   *   point 1 -> point 2
+   *
+   * Bottom2:
+   *   point 2 -> point 3
+   *
+   * ...
+   *
+   * Bottom(n-1):
+   *   point (n-1) -> point n
+   */
+  const bottomBorders = Array.from(
+    { length: n - 1 },
+    (_, index) => {
+      const i = index + 1
+      const j = i + 1
+
+      return (
+        `border Bottom${i}(t=0, 1){ ` +
+        `x = px${i}+(px${j}-px${i})*t;   ` +
+        `y =-py${i}-(py${j}-py${i})*t ;   ` +
+        `label = wall;   }`
+      )
+    },
+  ).join('\n')
+
+  /*
+   * --------------------------------------------------
+   * Right boundary
+   * --------------------------------------------------
+   *
+   * x = pxn
+   *
+   * y:
+   *   -pyn -> +pyn
+   */
+  const rightBorder =
+    `border bRight(t=0, 1){ ` +
+    `x = px${n};   ` +
+    `y =-py${n}+2*py${n}*t ;   ` +
+    `label = oulet;   }`
+
+  /*
+   * --------------------------------------------------
+   * Top borders
+   * --------------------------------------------------
+   *
+   * Top1:
+   *   point n -> point (n-1)
+   *
+   * Top2:
+   *   point (n-1) -> point (n-2)
+   *
+   * ...
+   *
+   * Top(n-1):
+   *   point 2 -> point 1
+   */
+  const topBorders = Array.from(
+    { length: n - 1 },
+    (_, index) => {
+      const i = n - index
+      const j = i - 1
+
+      return (
+        `border Top${index + 1}(t=0, 1){ ` +
+        `x = px${i}-(px${i}-px${j})*t;   ` +
+        `y =py${i}-(py${i}-py${j})*t ;   ` +
+        `label = wall;   }`
+      )
+    },
+  ).join('\n')
+
+  /*
+   * --------------------------------------------------
+   * Left boundary
+   * --------------------------------------------------
+   *
+   * x = px1
+   *
+   * y:
+   *   +pyn -> -pyn
+   */
+  const leftBorder =
+    `border bLeft(t=0, 1){ ` +
+    `x = px1;   ` +
+    `y =py${n}-2*py${n}*t ;   ` +
+    `label = inlet;   }`
+
+  /*
+   * --------------------------------------------------
+   * Final FreeFEM code
+   * --------------------------------------------------
+   */
+  return [
+    coordinateLines,
+    '',
+    bottomBorders,
+    rightBorder,
+    topBorders,
+    leftBorder,
+  ].join('\n')
 }
 
 export default function Page() {
@@ -227,10 +347,6 @@ export default function Page() {
   const [captured, setCaptured] =
     useState(false)
 
-  /**
-   * environment = rear camera
-   * user        = front camera
-   */
   const [cameraFacing, setCameraFacing] =
     useState<
       'environment' | 'user'
@@ -243,10 +359,6 @@ export default function Page() {
 
   /**
    * Start camera.
-   *
-   * Use ideal facingMode first because some
-   * iPad/Safari combinations reject exact
-   * facingMode constraints.
    */
   const startCamera = async (
     facing:
@@ -264,10 +376,6 @@ export default function Page() {
     }
 
     try {
-      /**
-       * Stop the previous stream before
-       * requesting another camera.
-       */
       stream?.getTracks().forEach(
         (track) => {
           track.stop()
@@ -277,9 +385,6 @@ export default function Page() {
       let nextStream: MediaStream
 
       try {
-        /**
-         * Preferred camera.
-         */
         nextStream =
           await navigator.mediaDevices.getUserMedia(
             {
@@ -297,10 +402,6 @@ export default function Page() {
           firstError,
         )
 
-        /**
-         * Fallback:
-         * let the browser choose an available camera.
-         */
         nextStream =
           await navigator.mediaDevices.getUserMedia(
             {
@@ -334,13 +435,7 @@ export default function Page() {
   }
 
   /**
-   * Switch between front and rear cameras.
-   *
-   * Camera switching is intentionally disabled
-   * after capture.
-   *
-   * The fixed frame must remain the
-   * measurement basis.
+   * Switch camera.
    */
   const switchCamera = async () => {
     if (captured) {
@@ -369,7 +464,7 @@ export default function Page() {
   }
 
   /**
-   * Capture the native video frame.
+   * Capture fixed frame.
    */
   const capture = async () => {
     const result =
@@ -382,10 +477,7 @@ export default function Page() {
   }
 
   /**
-   * Retake replaces the measurement frame.
-   *
-   * All geometry based on the old frame
-   * is cleared.
+   * Retake.
    */
   const retake = () => {
     setFixedFrame(null)
@@ -409,7 +501,7 @@ export default function Page() {
   }
 
   /**
-   * AXIS mathematics.
+   * Axis mathematics.
    */
   const axisMath =
     axis.a && axis.b
@@ -420,12 +512,7 @@ export default function Page() {
       : null
 
   /**
-   * SCALE:
-   *
-   * The SCALE line itself may be diagonal.
-   *
-   * Only the component parallel to the
-   * rotation axis is used for scaling.
+   * Project scale measurement onto axis direction.
    */
   const axisPixel =
     axisMath &&
@@ -439,11 +526,7 @@ export default function Page() {
       : 0
 
   /**
-   * mm / pixel
-   *
-   * known physical generatrix length
-   * --------------------------------
-   * projected SCALE length in pixels
+   * mm / px.
    */
   const scaleMmPerPx =
     axisPixel > 0 &&
@@ -455,8 +538,7 @@ export default function Page() {
       : 0
 
   /**
-   * Convert the traced profile into
-   * evenly spaced arc-length samples.
+   * Generate final profile.
    */
   const profile = useMemo(() => {
     if (
@@ -502,7 +584,7 @@ export default function Page() {
   ])
 
   /**
-   * Handle a single point in AXIS / SCALE.
+   * Handle point input.
    */
   const point = (p: Point) => {
     if (step === 'AXIS') {
@@ -538,7 +620,7 @@ export default function Page() {
   }
 
   /**
-   * Reset only the current drawing step.
+   * Reset current step.
    */
   const resetStep = () => {
     setError('')
@@ -572,7 +654,7 @@ export default function Page() {
   }
 
   /**
-   * Move to the next step after validation.
+   * Next step.
    */
   const next = () => {
     setError('')
@@ -632,7 +714,7 @@ export default function Page() {
   }
 
   /**
-   * Full application reset.
+   * Full reset.
    */
   const reset = () => {
     stream?.getTracks().forEach(
@@ -663,7 +745,7 @@ export default function Page() {
   }
 
   /**
-   * Grasshopper point list.
+   * Existing Grasshopper output.
    */
   const output =
     generateGrasshopperPointList(
@@ -671,29 +753,27 @@ export default function Page() {
     )
 
   /**
-   * JSON.
+   * Existing JSON output.
    */
   const json =
     generateJSON(profile)
 
   /**
-   * CSV.
+   * Existing CSV output.
    */
   const csv =
     generateCSV(profile)
 
   /**
-   * FreeFEM variables.
+   * FreeFEM output.
    *
-   * These are generated from the same
-   * final profile coordinates.
+   * This now contains:
    *
-   * Example:
-   *
-   * dx1=0.000000;
-   * dy1=12.345678;
-   * dx2=4.123456;
-   * dy2=13.456789;
+   * 1. px / py coordinate variables
+   * 2. Bottom borders
+   * 3. Right boundary
+   * 4. Top borders
+   * 5. Left boundary
    */
   const freeFEM =
     generateFreeFEMVariables(
@@ -701,7 +781,7 @@ export default function Page() {
     )
 
   /**
-   * Copy text.
+   * Existing copy function.
    */
   const copy = async (
     value: string,
@@ -720,13 +800,13 @@ export default function Page() {
   }
 
   /**
-   * Share coordinates.
+   * Share / AirDrop FreeFEM code.
    *
-   * On iPad/iPhone this opens the native
-   * share sheet.
+   * The actual shared file is:
    *
-   * The shared file is a plain-text file
-   * specifically formatted for FreeFEM.
+   * profile-coordinates.txt
+   *
+   * with MIME type text/plain.
    */
   const shareCoordinates =
     async () => {
@@ -739,7 +819,7 @@ export default function Page() {
 
       if (!navigator.share) {
         setError(
-          'このブラウザでは共有機能を利用できません。COPY CSVを使用してください。',
+          'このブラウザでは共有機能を利用できません。COPYを使用してください。',
         )
         return
       }
@@ -764,8 +844,7 @@ export default function Page() {
           )
 
         /**
-         * Preferred:
-         * share the actual text file.
+         * Prefer native file sharing.
          */
         if (
           navigator.canShare &&
@@ -777,7 +856,7 @@ export default function Page() {
             title:
               'Profile Coordinates',
             text:
-              'PROFILE TRACER / FreeFEM coordinates',
+              'PROFILE TRACER / FreeFEM code',
             files: [file],
           })
 
@@ -786,9 +865,7 @@ export default function Page() {
         }
 
         /**
-         * Fallback:
-         * share the FreeFEM variables
-         * directly as text.
+         * Text fallback.
          */
         await navigator.share({
           title:
@@ -799,8 +876,8 @@ export default function Page() {
         setError('')
       } catch (shareError) {
         /**
-         * Closing the native share sheet
-         * is not an actual error.
+         * User closed the share sheet.
+         * This is not an error.
          */
         if (
           shareError instanceof DOMException &&
@@ -816,18 +893,11 @@ export default function Page() {
         )
 
         setError(
-          '共有できませんでした。COPY CSVを使用してください。',
+          '共有できませんでした。COPYを使用してください。',
         )
       }
     }
 
-  /**
-   * The drawing surface is always the
-   * main visual area.
-   *
-   * The control panel is BELOW it,
-   * never over it.
-   */
   return (
     <main className="min-h-screen bg-background">
       {/* HEADER */}
