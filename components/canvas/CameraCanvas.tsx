@@ -19,19 +19,11 @@ export type CameraCanvasHandle = {
 
 type Props = {
   stream: MediaStream | null
-
   fixedFrame: HTMLCanvasElement | null
-
-  onFixedFrame: (
-    frame: HTMLCanvasElement | null,
-  ) => void
-
+  onFixedFrame: (frame: HTMLCanvasElement | null) => void
   onPoint?: (point: Point) => void
-
   onTrace?: (point: Point) => void
-
   tracing?: boolean
-
   overlays?: React.ReactNode
 }
 
@@ -56,20 +48,60 @@ export const CameraCanvas = forwardRef<
   const frameRef =
     useRef<HTMLDivElement>(null)
 
+  /*
+   * True while the pointer is physically down.
+   *
+   * This is especially important for Apple Pencil.
+   */
   const drawing =
     useRef(false)
 
-  /**
-   * Capture the exact native video frame.
+  /*
+   * Pointer ID currently drawing.
    *
-   * The measurement coordinate system is based on
-   * videoWidth / videoHeight, not CSS pixels.
+   * Prevents another pointer from accidentally
+   * modifying the trace.
+   */
+  const activePointerId =
+    useRef<number | null>(null)
+
+  /*
+   * The latest point received from the pointer.
+   */
+  const pendingPoint =
+    useRef<Point | null>(null)
+
+  /*
+   * requestAnimationFrame ID.
+   *
+   * PointerMove can fire much more frequently than
+   * React needs to re-render.
+   */
+  const frameRequest =
+    useRef<number | null>(null)
+
+  /*
+   * Keep the latest onTrace callback without
+   * forcing pointer handlers to be recreated.
+   */
+  const onTraceRef =
+    useRef(onTrace)
+
+  useEffect(() => {
+    onTraceRef.current = onTrace
+  }, [onTrace])
+
+  /*
+   * ---------------------------------------------------------
+   * CAPTURE
+   * ---------------------------------------------------------
    */
   useImperativeHandle(
     ref,
     () => ({
       capture: async () => {
-        const video = videoRef.current
+        const video =
+          videoRef.current
 
         if (
           !video ||
@@ -82,8 +114,11 @@ export const CameraCanvas = forwardRef<
         const frame =
           document.createElement('canvas')
 
-        frame.width = video.videoWidth
-        frame.height = video.videoHeight
+        frame.width =
+          video.videoWidth
+
+        frame.height =
+          video.videoHeight
 
         const context =
           frame.getContext('2d')
@@ -111,70 +146,82 @@ export const CameraCanvas = forwardRef<
     [onFixedFrame],
   )
 
-  /**
-   * Attach MediaStream to the video element.
+  /*
+   * ---------------------------------------------------------
+   * VIDEO STREAM
+   * ---------------------------------------------------------
    */
   useEffect(() => {
-    const video = videoRef.current
+    const video =
+      videoRef.current
 
     if (!video) {
       return
     }
 
-    video.srcObject = null
-
-    if (!stream) {
-      return
-    }
-
     video.srcObject = stream
 
-    const playVideo = async () => {
-      try {
-        await video.play()
-      } catch (error) {
-        console.warn(
-          'Video autoplay/play failed:',
-          error,
-        )
-      }
+    if (stream) {
+      void video.play().catch(() => {})
     }
-
-    void playVideo()
   }, [stream])
 
-  /**
-   * Stop the stream when this component is unmounted.
+  /*
+   * ---------------------------------------------------------
+   * CLEANUP
+   * ---------------------------------------------------------
    */
   useEffect(() => {
     return () => {
       const current =
-        videoRef.current?.srcObject as
+        videoRef.current
+          ?.srcObject as
           | MediaStream
           | null
 
       current
         ?.getTracks()
-        .forEach((track) => {
-          track.stop()
-        })
+        .forEach((track) =>
+          track.stop(),
+        )
+
+      if (
+        frameRequest.current !== null
+      ) {
+        cancelAnimationFrame(
+          frameRequest.current,
+        )
+      }
     }
   }, [])
 
-  /**
-   * Convert pointer/client coordinates
-   * into fixed-frame Canvas coordinates.
+  /*
+   * ---------------------------------------------------------
+   * CONVERT POINTER COORDINATES
    *
-   * IMPORTANT:
-   * No CSS/client coordinates are stored.
+   * Client coordinates
+   *        ↓
+   * displayed frame coordinates
+   *        ↓
+   * native captured-frame coordinates
+   *
+   * Points stored by the app are ALWAYS in
+   * captured-frame coordinates.
+   * ---------------------------------------------------------
    */
   const toLocal = (
     event: ReactPointerEvent<HTMLDivElement>,
   ): Point | null => {
-    const frame = fixedFrame
-    const layer = frameRef.current
+    const frame =
+      fixedFrame
 
-    if (!frame || !layer) {
+    const layer =
+      frameRef.current
+
+    if (
+      !frame ||
+      !layer
+    ) {
       return null
     }
 
@@ -194,9 +241,11 @@ export const CameraCanvas = forwardRef<
     const localY =
       event.clientY - rect.top
 
-    /**
-     * Ignore pointer events outside
-     * the displayed frame.
+    /*
+     * Do NOT clamp points outside the image.
+     *
+     * If the Pencil leaves the frame,
+     * simply ignore that point.
      */
     if (
       localX < 0 ||
@@ -210,14 +259,74 @@ export const CameraCanvas = forwardRef<
     return {
       x:
         localX *
-        (frame.width / rect.width),
+        (frame.width /
+          rect.width),
 
       y:
         localY *
-        (frame.height / rect.height),
+        (frame.height /
+          rect.height),
     }
   }
 
+  /*
+   * ---------------------------------------------------------
+   * FLUSH PENDING TRACE POINT
+   *
+   * React state is updated at most once per animation frame.
+   *
+   * This prevents hundreds of React renders per second
+   * while the Apple Pencil is moving.
+   * ---------------------------------------------------------
+   */
+  const flushTrace = () => {
+    frameRequest.current =
+      null
+
+    const point =
+      pendingPoint.current
+
+    if (!point) {
+      return
+    }
+
+    pendingPoint.current =
+      null
+
+    onTraceRef.current?.(
+      point,
+    )
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * QUEUE TRACE POINT
+   * ---------------------------------------------------------
+   */
+  const queueTracePoint = (
+    point: Point,
+  ) => {
+    pendingPoint.current =
+      point
+
+    if (
+      frameRequest.current !==
+      null
+    ) {
+      return
+    }
+
+    frameRequest.current =
+      requestAnimationFrame(
+        flushTrace,
+      )
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * POINTER DOWN
+   * ---------------------------------------------------------
+   */
   const down = (
     event: ReactPointerEvent<HTMLDivElement>,
   ) => {
@@ -225,65 +334,259 @@ export const CameraCanvas = forwardRef<
       return
     }
 
-    event.currentTarget.setPointerCapture(
-      event.pointerId,
-    )
+    /*
+     * PROFILE:
+     *
+     * Pencil/finger becomes the active drawing pointer.
+     */
+    if (tracing) {
+      /*
+       * Ignore additional pointers.
+       */
+      if (
+        activePointerId.current !==
+          null
+      ) {
+        return
+      }
 
-    const point = toLocal(event)
+      /*
+       * Prevent browser gestures.
+       */
+      event.preventDefault()
 
-    if (!point) {
+      /*
+       * Capture the pointer so that
+       * PointerMove continues to arrive
+       * even if the Pencil moves quickly.
+       */
+      event.currentTarget.setPointerCapture(
+        event.pointerId,
+      )
+
+      activePointerId.current =
+        event.pointerId
+
+      drawing.current =
+        true
+
+      const point =
+        toLocal(event)
+
+      if (point) {
+        /*
+         * IMPORTANT:
+         *
+         * The very first Pencil position is
+         * immediately recorded.
+         */
+        onTraceRef.current?.(
+          point,
+        )
+      }
+
       return
     }
 
-    if (tracing) {
-      drawing.current = true
+    /*
+     * AXIS / SCALE:
+     *
+     * These remain simple two-point taps.
+     */
+    event.preventDefault()
 
-      onTrace?.(point)
+    const point =
+      toLocal(event)
 
+    if (!point) {
       return
     }
 
     onPoint?.(point)
   }
 
+  /*
+   * ---------------------------------------------------------
+   * POINTER MOVE
+   * ---------------------------------------------------------
+   */
   const move = (
     event: ReactPointerEvent<HTMLDivElement>,
   ) => {
-    if (!drawing.current) {
+    if (!tracing) {
       return
     }
 
-    const point = toLocal(event)
+    /*
+     * Only the active Pencil/touch may draw.
+     */
+    if (
+      !drawing.current ||
+      activePointerId.current !==
+        event.pointerId
+    ) {
+      return
+    }
 
-    if (point) {
-      onTrace?.(point)
+    event.preventDefault()
+
+    const point =
+      toLocal(event)
+
+    if (!point) {
+      return
+    }
+
+    /*
+     * Queue the latest point instead of
+     * immediately causing a React render.
+     */
+    queueTracePoint(point)
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * END DRAWING
+   * ---------------------------------------------------------
+   */
+  const stopDrawing = (
+    event?: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    if (
+      event &&
+      activePointerId.current !==
+        event.pointerId
+    ) {
+      return
+    }
+
+    drawing.current =
+      false
+
+    activePointerId.current =
+      null
+
+    /*
+     * Flush the final point immediately.
+     */
+    if (
+      frameRequest.current !==
+      null
+    ) {
+      cancelAnimationFrame(
+        frameRequest.current,
+      )
+
+      frameRequest.current =
+        null
+    }
+
+    const finalPoint =
+      pendingPoint.current
+
+    pendingPoint.current =
+      null
+
+    if (finalPoint) {
+      onTraceRef.current?.(
+        finalPoint,
+      )
+    }
+
+    /*
+     * Release pointer capture.
+     */
+    if (
+      event &&
+      event.currentTarget.hasPointerCapture(
+        event.pointerId,
+      )
+    ) {
+      event.currentTarget.releasePointerCapture(
+        event.pointerId,
+      )
     }
   }
 
-  const stopDrawing = () => {
-    drawing.current = false
-  }
-
+  /*
+   * ---------------------------------------------------------
+   * FRAME SIZE
+   * ---------------------------------------------------------
+   */
   const width =
     fixedFrame?.width ?? 16
 
   const height =
     fixedFrame?.height ?? 9
 
+  /*
+   * ---------------------------------------------------------
+   * RENDER
+   * ---------------------------------------------------------
+   */
   return (
     <div className="relative w-full overflow-hidden rounded-lg bg-foreground/90">
       <div
         ref={frameRef}
         className="relative mx-auto w-full max-w-full"
         style={{
-          aspectRatio: `${width} / ${height}`,
+          aspectRatio:
+            `${width} / ${height}`,
+
+          /*
+           * CRITICAL FOR IPAD / APPLE PENCIL
+           *
+           * Prevent:
+           * - page scrolling
+           * - browser panning
+           * - pinch gesture interference
+           *
+           * while drawing.
+           */
           touchAction: 'none',
+
+          /*
+           * Prevent text selection during tracing.
+           */
+          userSelect: 'none',
+
+          /*
+           * Prevent native drag behavior.
+           */
+          WebkitUserSelect: 'none',
+          WebkitTouchCallout: 'none',
         }}
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={stopDrawing}
         onPointerCancel={stopDrawing}
-        onPointerLeave={stopDrawing}
+        onLostPointerCapture={() => {
+          /*
+           * If Safari unexpectedly releases
+           * the pointer capture, terminate
+           * the current stroke cleanly.
+           */
+          drawing.current =
+            false
+
+          activePointerId.current =
+            null
+
+          pendingPoint.current =
+            null
+
+          if (
+            frameRequest.current !==
+            null
+          ) {
+            cancelAnimationFrame(
+              frameRequest.current,
+            )
+
+            frameRequest.current =
+              null
+          }
+        }}
       >
         {fixedFrame ? (
           <canvas
@@ -292,8 +595,11 @@ export const CameraCanvas = forwardRef<
                 return
               }
 
-              node.width = fixedFrame.width
-              node.height = fixedFrame.height
+              node.width =
+                fixedFrame.width
+
+              node.height =
+                fixedFrame.height
 
               const context =
                 node.getContext('2d')
@@ -317,6 +623,7 @@ export const CameraCanvas = forwardRef<
             }}
             className="absolute inset-0 size-full"
             aria-label="Fixed camera frame"
+            draggable={false}
           />
         ) : (
           <video
@@ -326,6 +633,7 @@ export const CameraCanvas = forwardRef<
             muted
             autoPlay
             aria-label="Live camera preview"
+            draggable={false}
           />
         )}
 
