@@ -6,13 +6,12 @@ import {
   Check,
   Copy,
   RotateCcw,
+  Share2,
   Trash2,
   SwitchCamera,
-  Share2,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-
 import {
   CameraCanvas,
   type CameraCanvasHandle,
@@ -42,13 +41,13 @@ type Pair = {
   b: Point | null
 }
 
-const steps: Step[] = [
-  'AXIS',
-  'SCALE',
-  'PROFILE',
-  'RESULT',
-]
+const steps: Step[] = ['AXIS', 'SCALE', 'PROFILE', 'RESULT']
 
+/**
+ * Drawing overlay
+ *
+ * All coordinates are Canvas-local coordinates.
+ */
 function Overlay({
   axis,
   scale,
@@ -128,9 +127,7 @@ function Overlay({
 
         {trace.length > 1 && (
           <polyline
-            points={trace
-              .map((p) => `${p.x},${p.y}`)
-              .join(' ')}
+            points={trace.map((p) => `${p.x},${p.y}`).join(' ')}
             fill="none"
             stroke="var(--accent-foreground)"
             strokeWidth="4"
@@ -144,24 +141,31 @@ function Overlay({
 }
 
 /**
- * Generate FreeFEM-ready code.
- *
- * The generated text can be copied / shared directly
- * into a FreeFEM source file.
+ * Generate FreeFEM variables, borders and mesh definition.
  *
  * Coordinate variables:
  *
- * px1 = x coordinate along the rotation axis
- * py1 = radius
+ *   real px1=...;
+ *   real py1=...;
+ *   real px2=...;
+ *   real py2=...;
+ *   ...
  *
- * Example:
+ * Border structure:
  *
- * px1=0.000000;
- * py1=12.345678;
- * px2=4.123456;
- * py2=13.456789;
+ *   Bottom1 ... Bottom(n-1)
+ *   bRight
+ *   Top1 ... Top(n-1)
+ *   bLeft
  *
- * followed by the complete boundary definitions.
+ * Mesh structure:
+ *
+ *   mesh Th = buildmesh(
+ *     Bottom1(n)+...+Bottom(n-1)(n)
+ *     +bRight(4*n)
+ *     +Top1(n)+...+Top(n-1)(n)
+ *     +bLeft(4*n)
+ *   );
  */
 function generateFreeFEMVariables(
   points: Array<{
@@ -176,25 +180,23 @@ function generateFreeFEMVariables(
   const n = points.length
 
   /*
-   * --------------------------------------------------
-   * Coordinates
-   * --------------------------------------------------
+   * ---------------------------------------------------------
+   * Coordinate definitions
    *
-   * The profile's x/r values are used directly.
-   * TOP / BOTTOM does not change the sign.
+   * Each coordinate is explicitly declared as real.
+   * ---------------------------------------------------------
    */
   const coordinateLines = points
     .map(
       (point, index) =>
-        `px${index + 1}=${point.x.toFixed(6)};\n` +
-        `py${index + 1}=${point.r.toFixed(6)};`,
+        `real px${index + 1}=${point.x.toFixed(6)};\n` +
+        `real py${index + 1}=${point.r.toFixed(6)};`,
     )
     .join('\n')
 
   /*
-   * --------------------------------------------------
+   * ---------------------------------------------------------
    * Bottom borders
-   * --------------------------------------------------
    *
    * Bottom1:
    *   point 1 -> point 2
@@ -206,6 +208,7 @@ function generateFreeFEMVariables(
    *
    * Bottom(n-1):
    *   point (n-1) -> point n
+   * ---------------------------------------------------------
    */
   const bottomBorders = Array.from(
     { length: n - 1 },
@@ -223,25 +226,21 @@ function generateFreeFEMVariables(
   ).join('\n')
 
   /*
-   * --------------------------------------------------
-   * Right boundary
-   * --------------------------------------------------
+   * ---------------------------------------------------------
+   * Right opening
    *
-   * x = pxn
-   *
-   * y:
-   *   -pyn -> +pyn
+   * The opening is centered at the final profile point.
+   * ---------------------------------------------------------
    */
   const rightBorder =
     `border bRight(t=0, 1){ ` +
     `x = px${n};   ` +
     `y =-py${n}+2*py${n}*t ;   ` +
-    `label = oulet;   }`
+    `label = outlet;   }`
 
   /*
-   * --------------------------------------------------
+   * ---------------------------------------------------------
    * Top borders
-   * --------------------------------------------------
    *
    * Top1:
    *   point n -> point (n-1)
@@ -253,6 +252,7 @@ function generateFreeFEMVariables(
    *
    * Top(n-1):
    *   point 2 -> point 1
+   * ---------------------------------------------------------
    */
   const topBorders = Array.from(
     { length: n - 1 },
@@ -270,25 +270,71 @@ function generateFreeFEMVariables(
   ).join('\n')
 
   /*
-   * --------------------------------------------------
-   * Left boundary
-   * --------------------------------------------------
+   * ---------------------------------------------------------
+   * Left opening
    *
-   * x = px1
+   * IMPORTANT:
+   * The left opening uses py1.
    *
-   * y:
-   *   +pyn -> -pyn
+   * Correct:
+   *
+   *   y =py1-2*py1*t
+   *
+   * ---------------------------------------------------------
    */
   const leftBorder =
     `border bLeft(t=0, 1){ ` +
     `x = px1;   ` +
-    `y =py${n}-2*py${n}*t ;   ` +
+    `y =py1-2*py1*t ;   ` +
     `label = inlet;   }`
 
   /*
-   * --------------------------------------------------
+   * ---------------------------------------------------------
+   * buildmesh
+   *
+   * Bottom:
+   *
+   *   Bottom1(n)+Bottom2(n)+...+Bottom(n-1)(n)
+   *
+   * Right:
+   *
+   *   bRight(4*n)
+   *
+   * Top:
+   *
+   *   Top1(n)+Top2(n)+...+Top(n-1)(n)
+   *
+   * Left:
+   *
+   *   bLeft(4*n)
+   *
+   * All terms are expanded automatically.
+   * ---------------------------------------------------------
+   */
+  const bottomMeshTerms = Array.from(
+    { length: n - 1 },
+    (_, index) =>
+      `Bottom${index + 1}(n)`,
+  ).join('+')
+
+  const topMeshTerms = Array.from(
+    { length: n - 1 },
+    (_, index) =>
+      `Top${index + 1}(n)`,
+  ).join('+')
+
+  const meshDefinition =
+    `mesh Th = buildmesh(` +
+    `${bottomMeshTerms}` +
+    `+bRight(4*n)` +
+    `+${topMeshTerms}` +
+    `+bLeft(4*n)` +
+    `);`
+
+  /*
+   * ---------------------------------------------------------
    * Final FreeFEM code
-   * --------------------------------------------------
+   * ---------------------------------------------------------
    */
   return [
     coordinateLines,
@@ -297,6 +343,8 @@ function generateFreeFEMVariables(
     rightBorder,
     topBorders,
     leftBorder,
+    '',
+    meshDefinition,
   ].join('\n')
 }
 
@@ -314,8 +362,7 @@ export default function Page() {
       b: null,
     })
 
-  const [trace, setTrace] =
-    useState<Point[]>([])
+  const [trace, setTrace] = useState<Point[]>([])
 
   /**
    * Known physical length of the cylinder generatrix.
@@ -335,8 +382,7 @@ export default function Page() {
   const [side, setSide] =
     useState<'TOP' | 'BOTTOM'>('TOP')
 
-  const [error, setError] =
-    useState('')
+  const [error, setError] = useState('')
 
   const [stream, setStream] =
     useState<MediaStream | null>(null)
@@ -347,18 +393,24 @@ export default function Page() {
   const [captured, setCaptured] =
     useState(false)
 
+  /**
+   * environment = rear camera
+   * user        = front camera
+   */
   const [cameraFacing, setCameraFacing] =
-    useState<
-      'environment' | 'user'
-    >('environment')
+    useState<'environment' | 'user'>(
+      'environment',
+    )
 
   const canvasRef =
     useRef<CameraCanvasHandle>(null)
 
   const step = steps[stepIndex]
 
-  /**
-   * Start camera.
+  /*
+   * ---------------------------------------------------------
+   * CAMERA
+   * ---------------------------------------------------------
    */
   const startCamera = async (
     facing:
@@ -376,71 +428,77 @@ export default function Page() {
     }
 
     try {
-      stream?.getTracks().forEach(
-        (track) => {
-          track.stop()
-        },
-      )
+      let nextStream: MediaStream | null =
+        null
 
-      let nextStream: MediaStream
-
+      /*
+       * First try exact facing mode.
+       */
       try {
         nextStream =
           await navigator.mediaDevices.getUserMedia(
             {
               video: {
                 facingMode: {
-                  ideal: facing,
+                  exact: facing,
                 },
               },
               audio: false,
             },
           )
-      } catch (firstError) {
-        console.warn(
-          'Preferred camera request failed:',
-          firstError,
-        )
-
-        nextStream =
-          await navigator.mediaDevices.getUserMedia(
-            {
-              video: true,
-              audio: false,
-            },
-          )
+      } catch {
+        /*
+         * Then try ideal facing mode.
+         */
+        try {
+          nextStream =
+            await navigator.mediaDevices.getUserMedia(
+              {
+                video: {
+                  facingMode: {
+                    ideal: facing,
+                  },
+                },
+                audio: false,
+              },
+            )
+        } catch {
+          /*
+           * Finally fall back to any camera.
+           */
+          nextStream =
+            await navigator.mediaDevices.getUserMedia(
+              {
+                video: true,
+                audio: false,
+              },
+            )
+        }
       }
+
+      stream?.getTracks().forEach((track) =>
+        track.stop(),
+      )
 
       setStream(nextStream)
       setCameraFacing(facing)
       setError('')
     } catch (cameraError) {
-      console.error(
-        'Camera error:',
-        cameraError,
-      )
+      console.error(cameraError)
 
-      if (
-        cameraError instanceof DOMException
-      ) {
-        setError(
-          `カメラを開始できません。${cameraError.name}: ${cameraError.message}`,
-        )
-      } else {
-        setError(
-          'カメラを開始できません。HTTPSまたはカメラの使用許可を確認してください。',
-        )
-      }
+      setError(
+        'カメラを開始できません。HTTPSまたはlocalhostで、カメラの使用許可を確認してください。',
+      )
     }
   }
 
-  /**
-   * Switch camera.
+  /*
+   * ---------------------------------------------------------
+   * SWITCH CAMERA
+   * ---------------------------------------------------------
    */
   const switchCamera = async () => {
-    if (captured) {
-      return
-    }
+    if (captured) return
 
     const nextFacing =
       cameraFacing === 'environment'
@@ -450,21 +508,23 @@ export default function Page() {
     await startCamera(nextFacing)
   }
 
-  /**
-   * Stop camera.
+  /*
+   * ---------------------------------------------------------
+   * STOP CAMERA
+   * ---------------------------------------------------------
    */
   const stopCamera = () => {
-    stream?.getTracks().forEach(
-      (track) => {
-        track.stop()
-      },
+    stream?.getTracks().forEach((track) =>
+      track.stop(),
     )
 
     setStream(null)
   }
 
-  /**
-   * Capture fixed frame.
+  /*
+   * ---------------------------------------------------------
+   * CAPTURE FRAME
+   * ---------------------------------------------------------
    */
   const capture = async () => {
     const result =
@@ -476,8 +536,13 @@ export default function Page() {
     }
   }
 
-  /**
-   * Retake.
+  /*
+   * ---------------------------------------------------------
+   * RETAKE
+   * ---------------------------------------------------------
+   *
+   * The old measurement frame and all geometry
+   * derived from it are cleared.
    */
   const retake = () => {
     setFixedFrame(null)
@@ -500,8 +565,10 @@ export default function Page() {
     setError('')
   }
 
-  /**
-   * Axis mathematics.
+  /*
+   * ---------------------------------------------------------
+   * AXIS MATHEMATICS
+   * ---------------------------------------------------------
    */
   const axisMath =
     axis.a && axis.b
@@ -511,8 +578,15 @@ export default function Page() {
         )
       : null
 
-  /**
-   * Project scale measurement onto axis direction.
+  /*
+   * ---------------------------------------------------------
+   * SCALE
+   *
+   * The SCALE line may be diagonal.
+   *
+   * Only the component parallel to the rotation
+   * axis is used for scaling.
+   * ---------------------------------------------------------
    */
   const axisPixel =
     axisMath &&
@@ -525,8 +599,14 @@ export default function Page() {
         )
       : 0
 
-  /**
-   * mm / px.
+  /*
+   * ---------------------------------------------------------
+   * mm / pixel
+   *
+   * known physical generatrix length
+   * --------------------------------
+   * projected SCALE length in pixels
+   * ---------------------------------------------------------
    */
   const scaleMmPerPx =
     axisPixel > 0 &&
@@ -537,8 +617,13 @@ export default function Page() {
         )
       : 0
 
-  /**
-   * Generate final profile.
+  /*
+   * ---------------------------------------------------------
+   * PROFILE
+   *
+   * The manually traced points are resampled
+   * by arc length.
+   * ---------------------------------------------------------
    */
   const profile = useMemo(() => {
     if (
@@ -565,15 +650,14 @@ export default function Page() {
         targetCount,
       )
 
-    return sampled.map(
-      (point) =>
-        pointToProfilePoint(
-          point,
-          axis.a!,
-          axisMath.direction,
-          axisMath.radialDirection,
-          scaleMmPerPx,
-        ),
+    return sampled.map((point) =>
+      pointToProfilePoint(
+        point,
+        axis.a!,
+        axisMath.direction,
+        axisMath.radialDirection,
+        scaleMmPerPx,
+      ),
     )
   }, [
     axis,
@@ -583,8 +667,12 @@ export default function Page() {
     count,
   ])
 
-  /**
-   * Handle point input.
+  /*
+   * ---------------------------------------------------------
+   * HANDLE POINT
+   *
+   * Used by AXIS and SCALE.
+   * ---------------------------------------------------------
    */
   const point = (p: Point) => {
     if (step === 'AXIS') {
@@ -604,23 +692,24 @@ export default function Page() {
     }
 
     if (step === 'SCALE') {
-      setScalePoints(
-        (current) =>
-          current.a
-            ? {
-                a: current.a,
-                b: p,
-              }
-            : {
-                a: p,
-                b: null,
-              },
+      setScalePoints((current) =>
+        current.a
+          ? {
+              a: current.a,
+              b: p,
+            }
+          : {
+              a: p,
+              b: null,
+            },
       )
     }
   }
 
-  /**
-   * Reset current step.
+  /*
+   * ---------------------------------------------------------
+   * RESET CURRENT STEP
+   * ---------------------------------------------------------
    */
   const resetStep = () => {
     setError('')
@@ -653,8 +742,10 @@ export default function Page() {
     }
   }
 
-  /**
-   * Next step.
+  /*
+   * ---------------------------------------------------------
+   * NEXT STEP
+   * ---------------------------------------------------------
    */
   const next = () => {
     setError('')
@@ -707,20 +798,19 @@ export default function Page() {
       return
     }
 
-    setStepIndex(
-      (current) =>
-        Math.min(3, current + 1),
+    setStepIndex((current) =>
+      Math.min(3, current + 1),
     )
   }
 
-  /**
-   * Full reset.
+  /*
+   * ---------------------------------------------------------
+   * FULL RESET
+   * ---------------------------------------------------------
    */
   const reset = () => {
-    stream?.getTracks().forEach(
-      (track) => {
-        track.stop()
-      },
+    stream?.getTracks().forEach((track) =>
+      track.stop(),
     )
 
     setStream(null)
@@ -744,54 +834,49 @@ export default function Page() {
     setError('')
   }
 
-  /**
-   * Existing Grasshopper output.
+  /*
+   * ---------------------------------------------------------
+   * OUTPUT
+   * ---------------------------------------------------------
    */
   const output =
-    generateGrasshopperPointList(
-      profile,
-    )
+    generateGrasshopperPointList(profile)
 
-  /**
-   * Existing JSON output.
-   */
   const json =
     generateJSON(profile)
 
-  /**
-   * Existing CSV output.
-   */
   const csv =
     generateCSV(profile)
 
-  /**
-   * FreeFEM output.
+  /*
+   * ---------------------------------------------------------
+   * FREEFEM OUTPUT
+   * ---------------------------------------------------------
    *
-   * This now contains:
+   * Includes:
    *
-   * 1. px / py coordinate variables
-   * 2. Bottom borders
-   * 3. Right boundary
-   * 4. Top borders
-   * 5. Left boundary
+   *   real coordinate definitions
+   *   Bottom borders
+   *   bRight
+   *   Top borders
+   *   bLeft
+   *   mesh Th = buildmesh(...)
+   * ---------------------------------------------------------
    */
   const freeFEM =
-    generateFreeFEMVariables(
-      profile,
-    )
+    generateFreeFEMVariables(profile)
 
-  /**
-   * Existing copy function.
+  /*
+   * ---------------------------------------------------------
+   * COPY
+   * ---------------------------------------------------------
    */
   const copy = async (
     value: string,
   ) => {
     try {
       await copyText(value)
-
-      setError(
-        'コピーしました。',
-      )
+      setError('コピーしました。')
     } catch {
       setError(
         'コピーに失敗しました。',
@@ -799,20 +884,20 @@ export default function Page() {
     }
   }
 
-  /**
-   * Share / AirDrop FreeFEM code.
+  /*
+   * ---------------------------------------------------------
+   * SHARE / AIRDROP
+   * ---------------------------------------------------------
    *
-   * The actual shared file is:
-   *
-   * profile-coordinates.txt
-   *
-   * with MIME type text/plain.
+   * On iPad, Web Share opens the native share sheet.
+   * The user can select AirDrop there.
+   * ---------------------------------------------------------
    */
   const shareCoordinates =
     async () => {
       if (!freeFEM) {
         setError(
-          '共有する座標データがありません。',
+          '共有するFreeFEMデータがありません。',
         )
         return
       }
@@ -825,26 +910,23 @@ export default function Page() {
       }
 
       try {
-        const blob =
-          new Blob(
-            [freeFEM],
-            {
-              type:
-                'text/plain;charset=utf-8',
-            },
-          )
+        const blob = new Blob(
+          [freeFEM],
+          {
+            type: 'text/plain;charset=utf-8',
+          },
+        )
 
-        const file =
-          new File(
-            [blob],
-            'profile-coordinates.txt',
-            {
-              type: 'text/plain',
-            },
-          )
+        const file = new File(
+          [blob],
+          'profile-coordinates.txt',
+          {
+            type: 'text/plain',
+          },
+        )
 
-        /**
-         * Prefer native file sharing.
+        /*
+         * Prefer file sharing when supported.
          */
         if (
           navigator.canShare &&
@@ -864,8 +946,8 @@ export default function Page() {
           return
         }
 
-        /**
-         * Text fallback.
+        /*
+         * Fallback to text sharing.
          */
         await navigator.share({
           title:
@@ -875,9 +957,8 @@ export default function Page() {
 
         setError('')
       } catch (shareError) {
-        /**
-         * User closed the share sheet.
-         * This is not an error.
+        /*
+         * User cancelled the native share sheet.
          */
         if (
           shareError instanceof DOMException &&
@@ -898,6 +979,11 @@ export default function Page() {
       }
     }
 
+  /*
+   * ---------------------------------------------------------
+   * UI
+   * ---------------------------------------------------------
+   */
   return (
     <main className="min-h-screen bg-background">
       {/* HEADER */}
@@ -944,8 +1030,7 @@ export default function Page() {
               </span>
 
               <span className="font-semibold">
-                {index <
-                  stepIndex && (
+                {index < stepIndex && (
                   <Check className="mr-1 inline size-4" />
                 )}
 
@@ -964,13 +1049,9 @@ export default function Page() {
             ref={canvasRef}
             stream={stream}
             fixedFrame={fixedFrame}
-            onFixedFrame={
-              setFixedFrame
-            }
+            onFixedFrame={setFixedFrame}
             onPoint={point}
-            tracing={
-              step === 'PROFILE'
-            }
+            tracing={step === 'PROFILE'}
             onTrace={(p) =>
               setTrace(
                 (current) => [
@@ -982,9 +1063,7 @@ export default function Page() {
             overlays={
               <Overlay
                 axis={axis}
-                scale={
-                  scalePoints
-                }
+                scale={scalePoints}
                 trace={trace}
                 width={
                   fixedFrame?.width ??
@@ -1011,20 +1090,16 @@ export default function Page() {
             </h2>
 
             <p className="mt-3 leading-6 text-muted-foreground">
-              {step ===
-                'AXIS' &&
+              {step === 'AXIS' &&
                 '回転軸の両端を2点タップしてください'}
 
-              {step ===
-                'SCALE' &&
+              {step === 'SCALE' &&
                 '円柱の母線方向に対応する線分を2点タップしてください'}
 
-              {step ===
-                'PROFILE' &&
+              {step === 'PROFILE' &&
                 'TOPまたはBOTTOMを選択し、輪郭を指でなぞってください'}
 
-              {step ===
-                'RESULT' &&
+              {step === 'RESULT' &&
                 '取得した断面座標を確認・出力できます'}
             </p>
           </div>
@@ -1047,9 +1122,7 @@ export default function Page() {
               !captured && (
                 <>
                   <Button
-                    onClick={
-                      capture
-                    }
+                    onClick={capture}
                   >
                     CAPTURE FRAME
                   </Button>
@@ -1075,9 +1148,7 @@ export default function Page() {
             {captured && (
               <Button
                 variant="outline"
-                onClick={
-                  retake
-                }
+                onClick={retake}
               >
                 RETAKE
               </Button>
@@ -1086,20 +1157,15 @@ export default function Page() {
             {stream && (
               <Button
                 variant="outline"
-                onClick={
-                  stopCamera
-                }
+                onClick={stopCamera}
               >
                 STOP CAMERA
               </Button>
             )}
 
-            {(step ===
-              'AXIS' ||
-              step ===
-                'SCALE' ||
-              step ===
-                'PROFILE') && (
+            {(step === 'AXIS' ||
+              step === 'SCALE' ||
+              step === 'PROFILE') && (
               <Button
                 variant="outline"
                 onClick={
@@ -1113,8 +1179,7 @@ export default function Page() {
           </div>
 
           {/* SCALE */}
-          {step ===
-            'SCALE' && (
+          {step === 'SCALE' && (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <span className="text-xs text-muted-foreground">
@@ -1179,20 +1244,16 @@ export default function Page() {
           )}
 
           {/* PROFILE */}
-          {step ===
-            'PROFILE' && (
+          {step === 'PROFILE' && (
             <div className="flex flex-wrap items-end gap-2">
               <Button
                 variant={
-                  side ===
-                  'TOP'
+                  side === 'TOP'
                     ? 'default'
                     : 'outline'
                 }
                 onClick={() =>
-                  setSide(
-                    'TOP',
-                  )
+                  setSide('TOP')
                 }
               >
                 TOP
@@ -1200,8 +1261,7 @@ export default function Page() {
 
               <Button
                 variant={
-                  side ===
-                  'BOTTOM'
+                  side === 'BOTTOM'
                     ? 'default'
                     : 'outline'
                 }
@@ -1238,8 +1298,7 @@ export default function Page() {
           )}
 
           {/* RESULT */}
-          {step ===
-            'RESULT' && (
+          {step === 'RESULT' && (
             <div className="flex flex-col gap-3">
               <div>
                 <p className="mb-2 text-xs font-semibold text-muted-foreground">
@@ -1264,22 +1323,12 @@ export default function Page() {
 
               <Button
                 variant="outline"
-                onClick={
-                  shareCoordinates
-                }
-                disabled={!freeFEM}
-              >
-                <Share2 data-icon="inline-start" />
-                SHARE / AIRDROP
-              </Button>
-
-              <Button
-                variant="outline"
                 onClick={() =>
                   copy(json)
                 }
                 disabled={!json}
               >
+                <Copy data-icon="inline-start" />
                 COPY JSON
               </Button>
 
@@ -1290,7 +1339,21 @@ export default function Page() {
                 }
                 disabled={!csv}
               >
+                <Copy data-icon="inline-start" />
                 COPY CSV
+              </Button>
+
+              <Button
+                variant="outline"
+                onClick={
+                  shareCoordinates
+                }
+                disabled={
+                  !freeFEM
+                }
+              >
+                <Share2 data-icon="inline-start" />
+                SHARE / AIRDROP
               </Button>
             </div>
           )}
